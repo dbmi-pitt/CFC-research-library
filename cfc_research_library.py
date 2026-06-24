@@ -13,18 +13,23 @@ import argparse
 import json
 import os
 import re
+import tempfile
 import textwrap
 import time
 from dataclasses import asdict, dataclass
 from datetime import date
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable, TypeAlias
+from urllib.parse import urlparse
+from urllib.request import urlretrieve
 
 pd = None
 Entrez = None
 zotero = None
 SentenceTransformer = None
 util = None
+
+DataFrame: TypeAlias = Any
 
 
 CFC_TERMS = (
@@ -36,6 +41,53 @@ CFC_TERMS = (
 )
 
 CFC_GENES = ("BRAF", "MAP2K1", "MAP2K2", "KRAS")
+
+REVIEWER_DECISIONS = ("Needs reviewed", "Approved", "Not approved")
+
+DEFAULT_SCREENING_HISTORY_URL = (
+    "https://docs.google.com/spreadsheets/d/1BUvWcV6XgYiOL3cCrYAHjkccb24C38OK/"
+    "edit?usp=sharing&ouid=106518116377917721454&rtpof=true&sd=true"
+)
+
+CATEGORY_COLORS = {
+    "Allergy and Immunology": "D9EAD3",
+    "Cardiology": "F4CCCC",
+    "Dermatology": "FCE5CD",
+    "Development and Behavior": "D9D2E9",
+    "Endocrinology": "D0E0E3",
+    "Gastroenterology": "FFF2CC",
+    "General and Reviews": "EADCF8",
+    "Genetics": "CFE2F3",
+    "Gynecology": "FCE4EC",
+    "Neurology": "C9DAF8",
+    "Oncology": "E6B8AF",
+    "Ophthalmology": "D9EAD3",
+    "Orthopedic": "EAD7C2",
+    "Otolaryngology": "D0E0E3",
+    "Pulmonology": "D9EAF7",
+    "Research Studies": "E6E6E6",
+    "Seizures": "D9D2E9",
+    "Treatments": "D5A6BD",
+    "Historical Articles": "EFEFEF",
+    "Conferences": "D9D9D9",
+}
+
+OTHER_RASOPATHY_SIGNALS = (
+    "costello syndrome",
+    "hras-positive",
+    "hras positive",
+    "noonan syndrome",
+    "legius syndrome",
+    "neurofibromatosis type 1",
+)
+
+STRONG_CFC_SIGNALS = (
+    "cardiofaciocutaneous syndrome",
+    "cardio-facio-cutaneous syndrome",
+    "cfc syndrome",
+    "cardiofaciocutaneous",
+    "cardio-facio-cutaneous",
+)
 
 GENERAL_INCLUSION_CRITERIA = [
     "Directly discusses cardiofaciocutaneous syndrome, CFC syndrome, or a CFC-specific subgroup within RASopathy research.",
@@ -215,6 +267,9 @@ SECTION_ALIASES = {
 
 
 FINAL_COLUMNS = [
+    "Primary_Category",
+    "Matched_Categories",
+    "Reviewer_Decision",
     "PMID",
     "Title",
     "Authors",
@@ -223,10 +278,12 @@ FINAL_COLUMNS = [
     "Publication_Date",
     "DOI",
     "Abstract",
-    "Primary_Category",
     "Suggested_Labels",
     "Eligibility_Decision",
     "Eligibility_Rationale",
+    "History_Match",
+    "History_Decision",
+    "History_Source",
     "Section_Inclusion_Criteria",
     "Section_Exclusion_Criteria",
     "Found_in_Zotero",
@@ -240,6 +297,35 @@ FINAL_COLUMNS = [
 def normalize_category(name: str) -> str:
     cleaned = name.strip()
     return SECTION_ALIASES.get(cleaned, cleaned)
+
+
+def load_env_file(path: Path = Path(".env")) -> None:
+    """Load simple KEY=VALUE entries from .env without overriding existing variables."""
+    if not path.exists():
+        return
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+def normalize_text(value: object) -> str:
+    text = "" if value is None else str(value)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"[^a-z0-9]+", " ", text.lower())
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def normalize_pmid(value: object) -> str:
+    if value is None:
+        return ""
+    match = re.search(r"\b(\d{4,})\b", str(value))
+    return match.group(1) if match else ""
 
 
 def require_env(name: str) -> str:
@@ -269,6 +355,83 @@ def load_runtime_dependencies() -> None:
     zotero = zotero_module
     SentenceTransformer = sentence_transformer_class
     util = sentence_transformer_util
+
+
+def materialize_history_source(source: str) -> Path:
+    parsed = urlparse(source)
+    if parsed.scheme in {"http", "https"}:
+        match = re.search(r"/spreadsheets/d/([^/]+)", source)
+        download_url = source
+        suffix = ".xlsx"
+        if match:
+            download_url = f"https://docs.google.com/spreadsheets/d/{match.group(1)}/export?format=xlsx"
+        target = Path(tempfile.gettempdir()) / f"cfc_screening_history_{int(time.time())}{suffix}"
+        urlretrieve(download_url, target)
+        return target
+    return Path(source)
+
+
+def find_column(df: DataFrame, candidates: tuple[str, ...]) -> str | None:
+    normalized = {normalize_text(column): column for column in df.columns}
+    for candidate in candidates:
+        key = normalize_text(candidate)
+        if key in normalized:
+            return normalized[key]
+    return None
+
+
+def load_screening_history(source: str | None) -> dict[str, dict[str, dict[str, str]]]:
+    empty = {"pmid": {}, "title": {}}
+    if not source:
+        return empty
+
+    path = materialize_history_source(source)
+    if not path.exists():
+        raise RuntimeError(f"Screening history file was not found: {path}")
+
+    suffix = path.suffix.lower()
+    if suffix in {".xlsx", ".xls"}:
+        sheets = pd.read_excel(path, sheet_name=None, dtype=str)
+        frames = [frame.assign(_history_sheet=name) for name, frame in sheets.items()]
+        history_df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    elif suffix == ".csv":
+        history_df = pd.read_csv(path, dtype=str)
+        history_df["_history_sheet"] = path.name
+    elif suffix == ".tsv":
+        history_df = pd.read_csv(path, sep="\t", dtype=str)
+        history_df["_history_sheet"] = path.name
+    else:
+        raise RuntimeError("Screening history must be an .xlsx, .xls, .csv, .tsv, or accessible Google Sheets URL.")
+
+    if history_df.empty:
+        return empty
+
+    pmid_col = find_column(history_df, ("PMID", "PubMed ID", "PubMed_ID", "PMID Number"))
+    title_col = find_column(history_df, ("Title", "Article Title", "Article_Title"))
+    decision_col = find_column(history_df, ("Eligibility_Decision", "Eligibility Decision", "Decision", "Review_Status", "Review Status"))
+    status_col = find_column(history_df, ("Review_Status", "Review Status", "Status"))
+
+    history = {"pmid": {}, "title": {}}
+    for idx, row in history_df.iterrows():
+        pmid = normalize_pmid(row.get(pmid_col)) if pmid_col else ""
+        title = normalize_text(row.get(title_col)) if title_col else ""
+        decision = str(row.get(decision_col, "") or row.get(status_col, "") or "").strip()
+        source_label = f"{path.name}:{row.get('_history_sheet', 'Sheet')}:{idx + 2}"
+        record = {"decision": decision, "source": source_label}
+        if pmid:
+            history["pmid"][pmid] = record
+        if title:
+            history["title"][title] = record
+    return history
+
+
+def lookup_history_match(pmid: str, title: str, history: dict[str, dict[str, dict[str, str]]]) -> dict[str, str] | None:
+    if pmid and pmid in history.get("pmid", {}):
+        return history["pmid"][pmid]
+    normalized_title = normalize_text(title)
+    if normalized_title and normalized_title in history.get("title", {}):
+        return history["title"][normalized_title]
+    return None
 
 
 def extract_pmid_from_zotero_extra(extra: str | None) -> str | None:
@@ -344,7 +507,12 @@ def doi_from_article(article: dict) -> str:
     return ""
 
 
-def parse_pubmed_article(article: dict, section: LibrarySection, zotero_pmids: set[str]) -> dict:
+def parse_pubmed_article(
+    article: dict,
+    section: LibrarySection,
+    zotero_pmids: set[str],
+    screening_history: dict[str, dict[str, dict[str, str]]] | None = None,
+) -> dict:
     medline = article.get("MedlineCitation", {})
     article_data = medline.get("Article", {})
     pmid = str(medline.get("PMID", ""))
@@ -357,6 +525,7 @@ def parse_pubmed_article(article: dict, section: LibrarySection, zotero_pmids: s
             authors.append(name)
     year, publication_date = article_date(article)
     journal = str(article_data.get("Journal", {}).get("Title", ""))
+    history_match = lookup_history_match(pmid, title, screening_history or {"pmid": {}, "title": {}})
     eligibility, rationale = screen_article(title, abstract, section)
     found_in_zotero = pmid in zotero_pmids
     return {
@@ -369,12 +538,17 @@ def parse_pubmed_article(article: dict, section: LibrarySection, zotero_pmids: s
         "DOI": doi_from_article(article),
         "Abstract": abstract,
         "Primary_Category": section.name,
+        "Matched_Categories": section.name,
         "Suggested_Labels": "",
         "Eligibility_Decision": eligibility,
         "Eligibility_Rationale": rationale,
+        "History_Match": bool(history_match),
+        "History_Decision": history_match.get("decision", "") if history_match else "",
+        "History_Source": history_match.get("source", "") if history_match else "",
         "Section_Inclusion_Criteria": section.inclusion,
         "Section_Exclusion_Criteria": section.exclusion,
         "Found_in_Zotero": found_in_zotero,
+        "Reviewer_Decision": "Needs reviewed",
         "Review_Status": "Already in Zotero" if found_in_zotero else "Unreviewed",
         "Reviewer_Notes": "",
         "PubMed_URL": f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/" if pmid else "",
@@ -384,22 +558,28 @@ def parse_pubmed_article(article: dict, section: LibrarySection, zotero_pmids: s
 
 def screen_article(title: str, abstract: str, section: LibrarySection) -> tuple[str, str]:
     text = f"{title} {abstract}".lower()
+    title_text = title.lower()
     has_cfc_term = any(term.lower() in text for term in CFC_TERMS)
+    has_strong_cfc_signal = any(term in text for term in STRONG_CFC_SIGNALS)
+    has_cfc_in_title = any(term in title_text for term in STRONG_CFC_SIGNALS)
     has_cfc_gene = any(gene.lower() in text for gene in CFC_GENES)
     has_rasopathy = "rasopath" in text
+    has_other_rasopathy_in_title = any(signal in title_text for signal in OTHER_RASOPATHY_SIGNALS)
     section_terms = [token.lower() for token in re.findall(r"[A-Za-z]{5,}", section.description)]
     has_section_signal = any(token in text for token in section_terms[:12])
 
-    if has_cfc_term and has_section_signal:
-        return "Screen in", "Mentions CFC and matches the selected section topic."
-    if has_cfc_term:
+    if has_other_rasopathy_in_title and not has_cfc_in_title:
+        return "Screen out", "Title is centered on another RASopathy and does not identify CFC as the study population."
+    if has_strong_cfc_signal and has_section_signal:
+        return "Needs human review", "Mentions CFC and matches the section topic; confirm the article includes CFC-specific data before screening in."
+    if has_strong_cfc_signal:
         return "Needs human review", "Mentions CFC, but the section-specific topic signal is weak."
     if has_rasopathy and has_cfc_gene:
         return "Needs human review", "Mentions RASopathy plus a CFC-associated gene; check whether CFC data are present."
     return "Screen out", "No clear CFC-specific signal in title or abstract."
 
 
-def add_suggested_labels(df: pd.DataFrame, model_choice: str, label_count: int) -> pd.DataFrame:
+def add_suggested_labels(df: DataFrame, model_choice: str, label_count: int) -> DataFrame:
     if df.empty:
         return df
     model = SentenceTransformer(model_choice)
@@ -422,7 +602,7 @@ def add_suggested_labels(df: pd.DataFrame, model_choice: str, label_count: int) 
     return df
 
 
-def merge_with_existing(existing: pd.DataFrame, new_rows: pd.DataFrame) -> pd.DataFrame:
+def merge_with_existing(existing: DataFrame, new_rows: DataFrame) -> DataFrame:
     if existing.empty:
         return new_rows
     for column in FINAL_COLUMNS:
@@ -435,7 +615,7 @@ def merge_with_existing(existing: pd.DataFrame, new_rows: pd.DataFrame) -> pd.Da
     return refreshed.drop_duplicates(subset=["PMID"], keep="first")
 
 
-def load_existing(path: Path) -> tuple[pd.DataFrame, int]:
+def load_existing(path: Path) -> tuple[DataFrame, int]:
     if not path.exists():
         return pd.DataFrame(columns=FINAL_COLUMNS), 1
     existing = pd.read_excel(path, sheet_name="Review_Report", dtype={"PMID": str})
@@ -449,7 +629,7 @@ def load_existing(path: Path) -> tuple[pd.DataFrame, int]:
     return existing, run_count
 
 
-def criteria_frame() -> pd.DataFrame:
+def criteria_frame() -> DataFrame:
     return pd.DataFrame(
         [
             {
@@ -464,7 +644,7 @@ def criteria_frame() -> pd.DataFrame:
     )
 
 
-def build_deep_research_prompt(section: LibrarySection, recent_df: pd.DataFrame) -> str:
+def build_deep_research_prompt(section: LibrarySection | None, recent_df: DataFrame) -> str:
     article_lines = []
     for _, row in recent_df.head(50).iterrows():
         article_lines.append(
@@ -472,18 +652,32 @@ def build_deep_research_prompt(section: LibrarySection, recent_df: pd.DataFrame)
             f"Decision: {row.get('Eligibility_Decision', '')}. URL: {row.get('PubMed_URL', '')}"
         )
     articles = "\n".join(article_lines) if article_lines else "No new candidate articles were found in this run."
+    if section:
+        scope = f"the Zotero section: {section.name}"
+        section_context = textwrap.dedent(
+            f"""
+            Section description:
+            {section.description}
+
+            Inclusion criteria:
+            {section.inclusion}
+
+            Exclusion criteria:
+            {section.exclusion}
+            """
+        ).strip()
+    else:
+        scope = "all Zotero library sections in the CFC research library"
+        section_context = (
+            "Use each article's Primary_Category and Matched_Categories fields to keep the original "
+            "Zotero folder structure intact while reviewing the combined update."
+        )
+
     return textwrap.dedent(
         f"""
-        Conduct a deep research review update for the Zotero section: {section.name}.
+        Conduct a deep research review update for {scope}.
 
-        Section description:
-        {section.description}
-
-        Inclusion criteria:
-        {section.inclusion}
-
-        Exclusion criteria:
-        {section.exclusion}
+        {section_context}
 
         General inclusion criteria:
         {json.dumps(GENERAL_INCLUSION_CRITERIA, indent=2)}
@@ -505,10 +699,10 @@ def build_deep_research_prompt(section: LibrarySection, recent_df: pd.DataFrame)
 
 
 def launch_openai_deep_research(prompt: str) -> dict[str, str]:
-    """Start an optional OpenAI deep research run and return lightweight metadata."""
+    """Start an OpenAI deep research run and return lightweight metadata."""
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
-        raise RuntimeError("OPENAI_API_KEY is required for --run-openai-deep-research")
+        raise RuntimeError("OPENAI_API_KEY is required because deep research runs by default.")
 
     from openai import OpenAI
 
@@ -532,47 +726,156 @@ def launch_openai_deep_research(prompt: str) -> dict[str, str]:
 
 def write_workbook(
     path: Path,
-    report: pd.DataFrame,
+    report: DataFrame,
     run_count: int,
-    section: LibrarySection,
+    section: LibrarySection | None,
     prompt: str,
     openai_run: dict[str, str] | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    report = report.copy()
+    if "Reviewer_Decision" in report:
+        report["Reviewer_Decision"] = report["Reviewer_Decision"].replace("", pd.NA).fillna("Needs reviewed")
+    sort_columns = [column for column in ("Primary_Category", "Title", "Publication_Year") if column in report]
+    if sort_columns:
+        report = report.sort_values(sort_columns, kind="stable").reset_index(drop=True)
     instructions = pd.DataFrame(
         [
             [f"Report generated on: {time.ctime()}"],
             [f"Run Count: {run_count}"],
-            [f"Primary Category: {section.name}"],
+            [f"Primary Category: {section.name if section else 'All categories'}"],
             [""],
             ["How to Use This File"],
             ["1. Review_Report contains candidate articles and preserves Reviewer_Notes across runs."],
             ["2. Criteria contains the library descriptions plus inclusion/exclusion criteria for every Zotero section."],
             ["3. Deep_Research_Brief contains a prompt you can run with OpenAI deep research or an agent workflow."],
-            ["4. Re-run this program periodically; only unseen PubMed records are appended."],
+            ["4. Use Reviewer_Decision to mark Needs reviewed, Approved, or Not approved."],
+            ["5. Re-run this program periodically; only unseen PubMed records are appended."],
         ]
     )
     run_log = pd.DataFrame(
         [
-            {"Field": "Category", "Value": section.name},
-            {"Field": "PubMed Query", "Value": section.query},
+            {"Field": "Category", "Value": section.name if section else "All categories"},
+            {"Field": "PubMed Query", "Value": section.query if section else "Multiple category queries"},
             {"Field": "Rows in report", "Value": len(report)},
             {"Field": "Generated", "Value": time.ctime()},
         ]
     )
+    category_summary = (
+        report.groupby("Primary_Category", dropna=False)
+        .size()
+        .reset_index(name="Article_Count")
+        .sort_values(["Primary_Category"])
+    )
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
         report[FINAL_COLUMNS].to_excel(writer, sheet_name="Review_Report", index=False)
+        category_summary.to_excel(writer, sheet_name="Category_Summary", index=False)
         criteria_frame().to_excel(writer, sheet_name="Criteria", index=False)
         pd.DataFrame({"Deep_Research_Brief": [prompt]}).to_excel(writer, sheet_name="Deep_Research_Brief", index=False)
         if openai_run:
             pd.DataFrame([openai_run]).to_excel(writer, sheet_name="OpenAI_Run", index=False)
         run_log.to_excel(writer, sheet_name="Run_Log", index=False)
         instructions.to_excel(writer, sheet_name="Instructions", index=False, header=False)
+    apply_review_dropdown_formatting(path)
+
+
+def apply_review_dropdown_formatting(path: Path) -> None:
+    from openpyxl import load_workbook
+    from openpyxl.formatting.rule import FormulaRule
+    from openpyxl.styles import Font, PatternFill
+    from openpyxl.utils import get_column_letter
+    from openpyxl.worksheet.datavalidation import DataValidation
+
+    wb = load_workbook(path)
+    ws = wb["Review_Report"]
+    headers = [cell.value for cell in ws[1]]
+    if "Reviewer_Decision" not in headers:
+        wb.save(path)
+        return
+
+    decision_col = headers.index("Reviewer_Decision") + 1
+    decision_letter = get_column_letter(decision_col)
+    primary_category_col = headers.index("Primary_Category") + 1 if "Primary_Category" in headers else None
+    matched_category_col = headers.index("Matched_Categories") + 1 if "Matched_Categories" in headers else None
+    max_row = max(ws.max_row, 2)
+    decision_range = f"{decision_letter}2:{decision_letter}{max_row}"
+
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
+
+    validation = DataValidation(
+        type="list",
+        formula1=f'"{",".join(REVIEWER_DECISIONS)}"',
+        allow_blank=True,
+    )
+    ws.add_data_validation(validation)
+    validation.add(decision_range)
+
+    fills = {
+        "Needs reviewed": PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid"),
+        "Approved": PatternFill(start_color="D9EAD3", end_color="D9EAD3", fill_type="solid"),
+        "Not approved": PatternFill(start_color="F4CCCC", end_color="F4CCCC", fill_type="solid"),
+    }
+    for decision, fill in fills.items():
+        ws.conditional_formatting.add(
+            decision_range,
+            FormulaRule(formula=[f'${decision_letter}2="{decision}"'], fill=fill),
+        )
+
+    if primary_category_col:
+        for row in range(2, max_row + 1):
+            category_cell = ws.cell(row=row, column=primary_category_col)
+            color = CATEGORY_COLORS.get(str(category_cell.value), "FFFFFF")
+            category_cell.fill = PatternFill(start_color=color, end_color=color, fill_type="solid")
+            category_cell.font = Font(bold=True)
+            if matched_category_col:
+                ws.cell(row=row, column=matched_category_col).fill = PatternFill(
+                    start_color=color,
+                    end_color=color,
+                    fill_type="solid",
+                )
+
+    summary_ws = wb["Category_Summary"] if "Category_Summary" in wb.sheetnames else None
+    if summary_ws:
+        summary_headers = [cell.value for cell in summary_ws[1]]
+        if "Primary_Category" in summary_headers:
+            summary_category_col = summary_headers.index("Primary_Category") + 1
+            for row in range(2, summary_ws.max_row + 1):
+                category_cell = summary_ws.cell(row=row, column=summary_category_col)
+                color = CATEGORY_COLORS.get(str(category_cell.value), "FFFFFF")
+                category_cell.fill = PatternFill(start_color=color, end_color=color, fill_type="solid")
+                category_cell.font = Font(bold=True)
+        summary_ws.freeze_panes = "A2"
+        summary_ws.auto_filter.ref = summary_ws.dimensions
+
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+
+    widths = {
+        "PMID": 12,
+        "Title": 55,
+        "Primary_Category": 24,
+        "Matched_Categories": 38,
+        "Eligibility_Decision": 20,
+        "Reviewer_Decision": 18,
+        "Reviewer_Notes": 36,
+        "PubMed_URL": 34,
+    }
+    for index, header in enumerate(headers, start=1):
+        width = widths.get(str(header), 18)
+        ws.column_dimensions[get_column_letter(index)].width = width
+
+    wb.save(path)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Update a CFC syndrome literature review report.")
     parser.add_argument("--category", default="Dermatology", help="Zotero/library section to update.")
+    parser.add_argument(
+        "--all-categories",
+        action="store_true",
+        help="Search every configured Zotero/library section and export one combined workbook.",
+    )
     parser.add_argument("--output", default="reports/CFC_Master_Review_Report.xlsx", help="Workbook output path.")
     parser.add_argument("--retmax", type=int, default=10000, help="Maximum PubMed IDs to return.")
     parser.add_argument(
@@ -583,45 +886,94 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--suggested-labels", type=int, default=2, help="Number of secondary labels to suggest.")
     parser.add_argument("--skip-zotero", action="store_true", help="Skip Zotero API lookup and mark all as not found in Zotero.")
     parser.add_argument(
-        "--run-openai-deep-research",
+        "--screening-history",
+        default=DEFAULT_SCREENING_HISTORY_URL,
+        help="Previously screened .xlsx/.csv/.tsv file or accessible Google Sheets URL. Matches by PMID first, then title.",
+    )
+    parser.add_argument(
+        "--include-previously-screened",
         action="store_true",
-        help="Submit the generated brief to OpenAI deep research in background mode. Requires OPENAI_API_KEY.",
+        help="Keep screening-history matches in the new report instead of filtering them out.",
+    )
+    parser.add_argument(
+        "--skip-openai-deep-research",
+        action="store_true",
+        help="Do not submit the generated brief to OpenAI deep research. Use only for testing.",
     )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    load_env_file()
     load_runtime_dependencies()
     category = normalize_category(args.category)
-    if category not in SECTIONS:
+    run_all_categories = args.all_categories or category.lower() in {"all", "all categories"}
+    if not run_all_categories and category not in SECTIONS:
         choices = ", ".join(sorted(SECTIONS))
         raise SystemExit(f"Unknown category '{args.category}'. Choose one of: {choices}")
 
-    section = SECTIONS[category]
+    section = None if run_all_categories else SECTIONS[category]
+    sections_to_run = list(SECTIONS.values()) if run_all_categories else [section]
     Entrez.email = require_env("ENTREZ_EMAIL")
+    if not args.skip_openai_deep_research:
+        require_env("OPENAI_API_KEY")
     output_path = Path(args.output)
 
     existing, run_count = load_existing(output_path)
     existing_pmids = set(existing.get("PMID", pd.Series(dtype=str)).astype(str))
+    screening_history = load_screening_history(args.screening_history)
+    history_pmids = set(screening_history["pmid"])
 
     zotero_pmids = set()
     if not args.skip_zotero:
         zotero_pmids = fetch_zotero_pmids(require_env("ZOTERO_GROUP_ID"), require_env("ZOTERO_API_KEY"))
 
-    pubmed_pmids = search_pubmed(section.query, args.retmax)
-    new_pmids = [pmid for pmid in pubmed_pmids if pmid not in existing_pmids]
+    pmid_categories: dict[str, list[str]] = {}
+    section_counts: list[dict[str, object]] = []
+    for active_section in sections_to_run:
+        section_pmids = search_pubmed(active_section.query, args.retmax)
+        section_counts.append({"Section": active_section.name, "PubMed_Records_Found": len(section_pmids)})
+        for pmid in section_pmids:
+            pmid_categories.setdefault(pmid, [])
+            if active_section.name not in pmid_categories[pmid]:
+                pmid_categories[pmid].append(active_section.name)
+
+    pubmed_pmids = list(pmid_categories)
+    new_pmids = [
+        pmid
+        for pmid in pubmed_pmids
+        if pmid not in existing_pmids and (args.include_previously_screened or pmid not in history_pmids)
+    ]
     records = fetch_pubmed_records(new_pmids) if new_pmids else []
-    rows = [parse_pubmed_article(record, section, zotero_pmids) for record in records]
+    rows = []
+    for record in records:
+        pmid = str(record.get("MedlineCitation", {}).get("PMID", ""))
+        matched_categories = pmid_categories.get(pmid, [])
+        primary_section_name = matched_categories[0] if matched_categories else sections_to_run[0].name
+        primary_section = SECTIONS[primary_section_name]
+        row = parse_pubmed_article(record, primary_section, zotero_pmids, screening_history)
+        row["Matched_Categories"] = ", ".join(matched_categories) if matched_categories else primary_section.name
+        rows.append(row)
+    if not args.include_previously_screened:
+        rows = [row for row in rows if not row["History_Match"]]
     new_df = pd.DataFrame(rows, columns=FINAL_COLUMNS)
     new_df = add_suggested_labels(new_df, args.embedding_model, args.suggested_labels)
     report = merge_with_existing(existing, new_df)
     prompt = build_deep_research_prompt(section, new_df)
-    openai_run = launch_openai_deep_research(prompt) if args.run_openai_deep_research else None
+    openai_run = None if args.skip_openai_deep_research else launch_openai_deep_research(prompt)
     write_workbook(output_path, report, run_count, section, prompt, openai_run)
 
-    print(f"Category: {section.name}")
-    print(f"PubMed records found: {len(pubmed_pmids)}")
+    print(f"Category: {section.name if section else 'All categories'}")
+    print(f"Unique PubMed records found: {len(pubmed_pmids)}")
+    if run_all_categories:
+        print("Section counts:")
+        for item in section_counts:
+            print(f"  - {item['Section']}: {item['PubMed_Records_Found']}")
+    if args.screening_history:
+        print(f"Previously screened PMIDs loaded: {len(history_pmids)}")
+    if openai_run:
+        print(f"OpenAI deep research submitted: {openai_run.get('response_id', '')} ({openai_run.get('status', '')})")
     print(f"New records appended: {len(new_df)}")
     print(f"Workbook written: {output_path.resolve()}")
 
