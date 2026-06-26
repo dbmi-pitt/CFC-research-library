@@ -453,8 +453,25 @@ def fetch_zotero_pmids(group_id: str, api_key: str) -> set[str]:
     return pmids
 
 
-def search_pubmed(query: str, retmax: int) -> list[str]:
-    handle = Entrez.esearch(db="pubmed", term=query, retmax=str(retmax), sort="pub+date")
+def publication_date_filter(year: int | None) -> tuple[str | None, str | None]:
+    if not year:
+        return None, None
+    if year < 1800 or year > date.today().year:
+        raise RuntimeError(f"--since-year must be between 1800 and {date.today().year}.")
+    return f"{year}/01/01", date.today().strftime("%Y/%m/%d")
+
+
+def search_pubmed(query: str, retmax: int, since_year: int | None) -> list[str]:
+    mindate, maxdate = publication_date_filter(since_year)
+    search_kwargs = {
+        "db": "pubmed",
+        "term": query,
+        "retmax": str(retmax),
+        "sort": "pub+date",
+    }
+    if mindate and maxdate:
+        search_kwargs.update({"datetype": "pdat", "mindate": mindate, "maxdate": maxdate})
+    handle = Entrez.esearch(**search_kwargs)
     record = Entrez.read(handle)
     return [str(pmid) for pmid in record.get("IdList", [])]
 
@@ -615,6 +632,14 @@ def merge_with_existing(existing: DataFrame, new_rows: DataFrame) -> DataFrame:
     return refreshed.drop_duplicates(subset=["PMID"], keep="first")
 
 
+def filter_report_since_year(report: DataFrame, since_year: int | None) -> DataFrame:
+    if not since_year or report.empty or "Publication_Year" not in report:
+        return report
+    filtered = report.copy()
+    years = pd.to_numeric(filtered["Publication_Year"], errors="coerce")
+    return filtered[years >= since_year].reset_index(drop=True)
+
+
 def load_existing(path: Path) -> tuple[DataFrame, int]:
     if not path.exists():
         return pd.DataFrame(columns=FINAL_COLUMNS), 1
@@ -730,6 +755,7 @@ def write_workbook(
     run_count: int,
     section: LibrarySection | None,
     prompt: str,
+    since_year: int | None,
     openai_run: dict[str, str] | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -744,6 +770,7 @@ def write_workbook(
             [f"Report generated on: {time.ctime()}"],
             [f"Run Count: {run_count}"],
             [f"Primary Category: {section.name if section else 'All categories'}"],
+            [f"Publication Date Filter: {since_year or 'all years'} onward"],
             [""],
             ["How to Use This File"],
             ["1. Review_Report contains candidate articles and preserves Reviewer_Notes across runs."],
@@ -757,6 +784,7 @@ def write_workbook(
         [
             {"Field": "Category", "Value": section.name if section else "All categories"},
             {"Field": "PubMed Query", "Value": section.query if section else "Multiple category queries"},
+            {"Field": "Publication date filter", "Value": f"{since_year or 'all years'} onward"},
             {"Field": "Rows in report", "Value": len(report)},
             {"Field": "Generated", "Value": time.ctime()},
         ]
@@ -879,6 +907,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", default="reports/CFC_Master_Review_Report.xlsx", help="Workbook output path.")
     parser.add_argument("--retmax", type=int, default=10000, help="Maximum PubMed IDs to return.")
     parser.add_argument(
+        "--since-year",
+        type=int,
+        default=2025,
+        help="Only search PubMed records published from this year onward. Use 0 to search all years.",
+    )
+    parser.add_argument(
         "--embedding-model",
         default="microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext",
         help="Sentence-transformers model used for suggested labels.",
@@ -909,6 +943,7 @@ def main() -> None:
     load_runtime_dependencies()
     category = normalize_category(args.category)
     run_all_categories = args.all_categories or category.lower() in {"all", "all categories"}
+    since_year = args.since_year or None
     if not run_all_categories and category not in SECTIONS:
         choices = ", ".join(sorted(SECTIONS))
         raise SystemExit(f"Unknown category '{args.category}'. Choose one of: {choices}")
@@ -932,7 +967,7 @@ def main() -> None:
     pmid_categories: dict[str, list[str]] = {}
     section_counts: list[dict[str, object]] = []
     for active_section in sections_to_run:
-        section_pmids = search_pubmed(active_section.query, args.retmax)
+        section_pmids = search_pubmed(active_section.query, args.retmax, since_year)
         section_counts.append({"Section": active_section.name, "PubMed_Records_Found": len(section_pmids)})
         for pmid in section_pmids:
             pmid_categories.setdefault(pmid, [])
@@ -960,11 +995,13 @@ def main() -> None:
     new_df = pd.DataFrame(rows, columns=FINAL_COLUMNS)
     new_df = add_suggested_labels(new_df, args.embedding_model, args.suggested_labels)
     report = merge_with_existing(existing, new_df)
+    report = filter_report_since_year(report, since_year)
     prompt = build_deep_research_prompt(section, new_df)
     openai_run = None if args.skip_openai_deep_research else launch_openai_deep_research(prompt)
-    write_workbook(output_path, report, run_count, section, prompt, openai_run)
+    write_workbook(output_path, report, run_count, section, prompt, since_year, openai_run)
 
     print(f"Category: {section.name if section else 'All categories'}")
+    print(f"Publication date filter: {since_year or 'all years'} onward")
     print(f"Unique PubMed records found: {len(pubmed_pmids)}")
     if run_all_categories:
         print("Section counts:")

@@ -40,7 +40,7 @@ Easiest option on Windows:
 2. Add your real `ENTREZ_EMAIL`, `ZOTERO_GROUP_ID`, `ZOTERO_API_KEY`, and `OPENAI_API_KEY`.
 3. Double-click `Run CFC Research Update.bat`.
 
-The launcher creates/uses the local Python environment, installs the required libraries, filters out previously screened articles from the default Google Sheets history, runs all categories, submits OpenAI deep research, and writes:
+The launcher creates/uses the local Python environment, installs the required libraries, filters out previously screened articles from the default Google Sheets history, searches for articles published from 2025 onward, runs all categories, submits OpenAI deep research, and writes:
 
 `reports/CFC_All_Categories_Master_Review_Report.xlsx`
 
@@ -53,10 +53,10 @@ python cfc_research_library.py --category Dermatology --output reports/Dermatolo
 To export one combined workbook for every category while preserving category labels:
 
 ```powershell
-uv run python cfc_research_library.py --all-categories --output reports/CFC_All_Categories_Master_Review_Report.xlsx
+uv run python cfc_research_library.py --all-categories --since-year 2025 --output reports/CFC_All_Categories_Master_Review_Report.xlsx
 ```
 
-The combined workbook keeps `Primary_Category` and `Matched_Categories` columns so reviewers can filter or sort by the original library sections. By default, this command also reads the prior Google Sheets screening history, filters out already-screened papers, and submits an OpenAI deep research run.
+The combined workbook keeps `Primary_Category` and `Matched_Categories` columns so reviewers can filter or sort by the original library sections. By default, this command searches publication dates from 2025 onward, reads the prior Google Sheets screening history, filters out already-screened papers, and submits an OpenAI deep research run.
 
 The prior screening history defaults to:
 
@@ -65,7 +65,7 @@ The prior screening history defaults to:
 To use a different prior screening file:
 
 ```powershell
-uv run python cfc_research_library.py --all-categories --output reports/CFC_All_Categories_Master_Review_Report.xlsx --screening-history "C:\path\to\screening_history.xlsx"
+uv run python cfc_research_library.py --all-categories --since-year 2025 --output reports/CFC_All_Categories_Master_Review_Report.xlsx --screening-history "C:\path\to\screening_history.xlsx"
 ```
 
 If the Google Sheet is not publicly downloadable, export it as `.xlsx` or `.csv` and pass the downloaded file path to `--screening-history`.
@@ -73,7 +73,7 @@ If the Google Sheet is not publicly downloadable, export it as `.xlsx` or `.csv`
 For testing only, you can skip OpenAI deep research:
 
 ```powershell
-uv run python cfc_research_library.py --all-categories --output reports/CFC_All_Categories_Master_Review_Report.xlsx --skip-openai-deep-research
+uv run python cfc_research_library.py --all-categories --since-year 2025 --output reports/CFC_All_Categories_Master_Review_Report.xlsx --skip-openai-deep-research
 ```
 
 Useful categories include:

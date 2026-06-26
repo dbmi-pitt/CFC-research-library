@@ -67,7 +67,7 @@ Write-Host "Installing or updating required libraries..."
 
 Write-Host ""
 Write-Host "Running all-category research update..."
-& ".venv\Scripts\python.exe" cfc_research_library.py --all-categories --output "reports\CFC_All_Categories_Master_Review_Report.xlsx" *>> $LogFile
+& ".venv\Scripts\python.exe" cfc_research_library.py --all-categories --since-year 2025 --output "reports\CFC_All_Categories_Master_Review_Report.xlsx" *>> $LogFile
 
 Write-Host ""
 Write-Host "Done."

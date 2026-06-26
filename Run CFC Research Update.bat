@@ -82,7 +82,7 @@ if errorlevel 1 goto failed
 
 echo.
 echo Running all-category research update...
-".venv\Scripts\python.exe" cfc_research_library.py --all-categories --output reports\CFC_All_Categories_Master_Review_Report.xlsx >> "%LOG_FILE%" 2>&1
+".venv\Scripts\python.exe" cfc_research_library.py --all-categories --since-year 2025 --output reports\CFC_All_Categories_Master_Review_Report.xlsx >> "%LOG_FILE%" 2>&1
 if errorlevel 1 goto failed
 
 echo.
