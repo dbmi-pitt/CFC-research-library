@@ -301,6 +301,21 @@ FINAL_COLUMNS = [
     "Last_Seen",
 ]
 
+REVIEW_COMPARISON_YEARS = (2017, 2022)
+
+REVIEW_COMPARISON_EXPORT_COLUMNS = [
+    ("PMID", "PubMed ID"),
+    ("Title", "Article Title"),
+    ("Publication_Date", "Date"),
+    ("System_Relevance_Decision", "Relevance"),
+    ("Google_Sheets_Found", "Found in Sheets?"),
+    ("Zotero_Found", "Found in Zotero?"),
+    ("Human_OpenAI_Match", "Match?"),
+    ("OpenAI_Screening_Display", "OpenAI Screening In or Out"),
+    ("Zotero_Category_Display", "If in Zotero - Category"),
+    ("OpenAI_Primary_Category", "OpenAI Assigned Category"),
+]
+
 
 def normalize_category(name: str) -> str:
     cleaned = name.strip()
@@ -334,6 +349,44 @@ def normalize_pmid(value: object) -> str:
         return ""
     match = re.search(r"\b(\d{4,})\b", str(value))
     return match.group(1) if match else ""
+
+
+def normalize_doi(value: object) -> str:
+    if value is None:
+        return ""
+    text = str(value).strip().lower()
+    text = re.sub(r"^https?://(?:dx\.)?doi\.org/", "", text)
+    text = re.sub(r"^doi:\s*", "", text)
+    return text.strip().rstrip(".")
+
+
+def screening_direction(value: object) -> str:
+    text = normalize_text(value)
+    if not text:
+        return ""
+    screen_in_terms = (
+        "screen in",
+        "screened in",
+        "include",
+        "included",
+        "approved",
+        "relevant",
+        "yes",
+    )
+    screen_out_terms = (
+        "screen out",
+        "screened out",
+        "exclude",
+        "excluded",
+        "not approved",
+        "not relevant",
+        "no",
+    )
+    if any(term in text for term in screen_out_terms):
+        return "out"
+    if any(term in text for term in screen_in_terms):
+        return "in"
+    return ""
 
 
 def require_env(name: str) -> str:
@@ -389,7 +442,7 @@ def find_column(df: DataFrame, candidates: tuple[str, ...]) -> str | None:
 
 
 def load_screening_history(source: str | None) -> dict[str, dict[str, dict[str, str]]]:
-    empty = {"pmid": {}, "title": {}}
+    empty = {"pmid": {}, "doi": {}, "title": {}}
     if not source:
         return empty
 
@@ -415,27 +468,38 @@ def load_screening_history(source: str | None) -> dict[str, dict[str, dict[str, 
         return empty
 
     pmid_col = find_column(history_df, ("PMID", "PubMed ID", "PubMed_ID", "PMID Number"))
+    doi_col = find_column(history_df, ("DOI", "doi", "Digital Object Identifier"))
     title_col = find_column(history_df, ("Title", "Article Title", "Article_Title"))
     decision_col = find_column(history_df, ("Eligibility_Decision", "Eligibility Decision", "Decision", "Review_Status", "Review Status"))
     status_col = find_column(history_df, ("Review_Status", "Review Status", "Status"))
+    category_col = find_column(history_df, ("Category", "Primary_Category", "Primary Category", "Folder", "Zotero Folder", "Suggested_Labels", "Suggested Labels"))
+    notes_col = find_column(history_df, ("Notes", "Reviewer_Notes", "Reviewer Notes", "Rationale", "Comment", "Comments"))
 
-    history = {"pmid": {}, "title": {}}
+    history = {"pmid": {}, "doi": {}, "title": {}}
     for idx, row in history_df.iterrows():
         pmid = normalize_pmid(row.get(pmid_col)) if pmid_col else ""
+        doi = normalize_doi(row.get(doi_col)) if doi_col else ""
         title = normalize_text(row.get(title_col)) if title_col else ""
         decision = str(row.get(decision_col, "") or row.get(status_col, "") or "").strip()
+        category = str(row.get(category_col, "") or "").strip() if category_col else ""
+        notes = str(row.get(notes_col, "") or "").strip() if notes_col else ""
         source_label = f"{path.name}:{row.get('_history_sheet', 'Sheet')}:{idx + 2}"
-        record = {"decision": decision, "source": source_label}
+        record = {"decision": decision, "category": category, "notes": notes, "source": source_label, "doi": doi}
         if pmid:
             history["pmid"][pmid] = record
+        if doi:
+            history["doi"][doi] = record
         if title:
             history["title"][title] = record
     return history
 
 
-def lookup_history_match(pmid: str, title: str, history: dict[str, dict[str, dict[str, str]]]) -> dict[str, str] | None:
+def lookup_history_match(pmid: str, title: str, history: dict[str, dict[str, dict[str, str]]], doi: str = "") -> dict[str, str] | None:
     if pmid and pmid in history.get("pmid", {}):
         return history["pmid"][pmid]
+    normalized_doi = normalize_doi(doi)
+    if normalized_doi and normalized_doi in history.get("doi", {}):
+        return history["doi"][normalized_doi]
     normalized_title = normalize_text(title)
     if normalized_title and normalized_title in history.get("title", {}):
         return history["title"][normalized_title]
@@ -449,6 +513,22 @@ def extract_pmid_from_zotero_extra(extra: str | None) -> str | None:
     return match.group(1) if match else None
 
 
+def zotero_item_record(item: dict, data: dict, collections: dict[str, str]) -> dict[str, str]:
+    collection_keys = data.get("collections") or []
+    folder_names = [collections.get(key, key) for key in collection_keys if collections.get(key, key)]
+    current_category = ", ".join(folder_names) if folder_names else "unfiled"
+    return {
+        "found": "Yes",
+        "category": current_category,
+        "file_status": "filed" if folder_names else "unfiled",
+        "item_key": item.get("key", ""),
+        "url": data.get("url", ""),
+        "pmid": extract_pmid_from_zotero_extra(data.get("extra")) or "",
+        "doi": normalize_doi(data.get("DOI", "")),
+        "title": normalize_text(data.get("title", "")),
+    }
+
+
 def fetch_zotero_pmids(group_id: str, api_key: str) -> set[str]:
     zot = zotero.Zotero(group_id, "group", api_key)
     items = zot.everything(zot.items())
@@ -459,6 +539,40 @@ def fetch_zotero_pmids(group_id: str, api_key: str) -> set[str]:
         if pmid:
             pmids.add(pmid)
     return pmids
+
+
+def fetch_zotero_index(group_id: str, api_key: str) -> dict[str, dict[str, dict[str, str]]]:
+    zot = zotero.Zotero(group_id, "group", api_key)
+    collections = {collection["key"]: collection["data"].get("name", "") for collection in zot.everything(zot.collections())}
+    items = zot.everything(zot.items())
+    index: dict[str, dict[str, dict[str, str]]] = {"pmid": {}, "doi": {}, "title": {}}
+    for item in items:
+        data = item.get("data", {})
+        record = zotero_item_record(item, data, collections)
+        if record["pmid"]:
+            index["pmid"][record["pmid"]] = record
+        if record["doi"]:
+            index["doi"][record["doi"]] = record
+        if record["title"]:
+            index["title"][record["title"]] = record
+    return index
+
+
+def lookup_zotero_match(
+    pmid: str,
+    title: str,
+    doi: str,
+    zotero_index: dict[str, dict[str, dict[str, str]]],
+) -> dict[str, str] | None:
+    if pmid and pmid in zotero_index.get("pmid", {}):
+        return zotero_index["pmid"][pmid]
+    normalized_doi = normalize_doi(doi)
+    if normalized_doi and normalized_doi in zotero_index.get("doi", {}):
+        return zotero_index["doi"][normalized_doi]
+    normalized_title = normalize_text(title)
+    if normalized_title and normalized_title in zotero_index.get("title", {}):
+        return zotero_index["title"][normalized_title]
+    return None
 
 
 def publication_date_filter(from_year: int | None, to_year: int | None) -> tuple[str | None, str | None]:
@@ -567,7 +681,8 @@ def parse_pubmed_article(
             authors.append(name)
     year, publication_date = article_date(article)
     journal = str(article_data.get("Journal", {}).get("Title", ""))
-    history_match = lookup_history_match(pmid, title, screening_history or {"pmid": {}, "title": {}})
+    doi = doi_from_article(article)
+    history_match = lookup_history_match(pmid, title, screening_history or {"pmid": {}, "doi": {}, "title": {}}, doi)
     eligibility, rationale = screen_article(title, abstract, section)
     found_in_zotero = pmid in zotero_pmids
     return {
@@ -577,7 +692,7 @@ def parse_pubmed_article(
         "Journal": journal,
         "Publication_Year": year,
         "Publication_Date": publication_date,
-        "DOI": doi_from_article(article),
+        "DOI": doi,
         "Abstract": abstract,
         "Primary_Category": section.name,
         "Matched_Categories": section.name,
@@ -642,6 +757,542 @@ def add_suggested_labels(df: DataFrame, model_choice: str, label_count: int) -> 
     df = df.copy()
     df["Suggested_Labels"] = suggestions
     return df
+
+
+def add_deep_learning_review_columns(df: DataFrame, model_choice: str, label_count: int = 3) -> DataFrame:
+    if df.empty:
+        return df
+    model = SentenceTransformer(model_choice)
+    labels = list(SECTIONS)
+    label_texts = [
+        f"{section.name}. {section.description} Inclusion: {section.inclusion} Exclusion: {section.exclusion}"
+        for section in SECTIONS.values()
+    ]
+    label_embeddings = model.encode(label_texts)
+    texts = (df["Title"].fillna("") + ". " + df["Abstract"].fillna("")).tolist()
+    article_embeddings = model.encode(texts)
+    scores = util.cos_sim(article_embeddings, label_embeddings)
+
+    top_categories = []
+    top_scores = []
+    suggested = []
+    all_scores = []
+    for row_scores in scores:
+        pairs = sorted(
+            [(float(score), label) for score, label in zip(row_scores, labels)],
+            key=lambda item: item[0],
+            reverse=True,
+        )
+        top_categories.append(pairs[0][1])
+        top_scores.append(round(pairs[0][0], 4))
+        suggested.append(", ".join(label for _, label in pairs[:label_count]))
+        all_scores.append("; ".join(f"{label}:{score:.3f}" for score, label in pairs[:8]))
+
+    output = df.copy()
+    output["Deep_Learning_Top_Category"] = top_categories
+    output["Deep_Learning_Top_Score"] = top_scores
+    output["Deep_Learning_Suggested_Categories"] = suggested
+    output["Deep_Learning_All_Category_Scores"] = all_scores
+    return output
+
+
+def openai_review_categories_payload() -> list[dict[str, str]]:
+    return [
+        {
+            "category": section.name,
+            "description": section.description,
+            "inclusion": section.inclusion,
+            "exclusion": section.exclusion,
+        }
+        for section in SECTIONS.values()
+    ]
+
+
+def parse_json_response(text: str) -> dict:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?", "", cleaned, flags=re.IGNORECASE).strip()
+        cleaned = re.sub(r"```$", "", cleaned).strip()
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start >= 0 and end > start:
+            return json.loads(cleaned[start : end + 1])
+        raise
+
+
+def add_openai_review_columns(df: DataFrame, batch_size: int = 5) -> DataFrame:
+    if df.empty:
+        return df
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is required for review comparison mode.")
+
+    from openai import OpenAI
+
+    client = OpenAI(api_key=api_key)
+    model_name = os.getenv("OPENAI_CATEGORY_MODEL", "gpt-4.1-mini")
+    output = df.copy()
+    for column in [
+        "OpenAI_Relevance_Decision",
+        "OpenAI_Primary_Category",
+        "OpenAI_Secondary_Categories",
+        "OpenAI_Rationale",
+        "OpenAI_Confidence",
+    ]:
+        output[column] = ""
+
+    categories = openai_review_categories_payload()
+    for start in range(0, len(output), batch_size):
+        batch = output.iloc[start : start + batch_size]
+        articles = []
+        for idx, row in batch.iterrows():
+            articles.append(
+                {
+                    "row_index": int(idx),
+                    "pmid": str(row.get("PMID", "")),
+                    "title": str(row.get("Title", "")),
+                    "abstract": str(row.get("Abstract", ""))[:3000],
+                    "deep_learning_top_category": str(row.get("Deep_Learning_Top_Category", "")),
+                    "deep_learning_suggested_categories": str(row.get("Deep_Learning_Suggested_Categories", "")),
+                    "google_sheets_found": str(row.get("Google_Sheets_Found", "")),
+                    "google_sheets_decision": str(row.get("Google_Sheets_Decision", "")),
+                    "zotero_found": str(row.get("Zotero_Found", "")),
+                    "zotero_current_category": str(row.get("Zotero_Current_Category", "")),
+                }
+            )
+
+        prompt = textwrap.dedent(
+            f"""
+            Review each PubMed article for a CFC syndrome literature review.
+
+            Decide relevance using only these values:
+            Relevant, Possibly relevant, Not relevant
+
+            Then assign categories only for articles that are Relevant or Possibly relevant.
+            Use the category definitions and criteria below:
+            {json.dumps(categories, indent=2)}
+
+            Articles:
+            {json.dumps(articles, indent=2)}
+
+            Return only valid JSON in this exact shape:
+            {{
+              "articles": [
+                {{
+                  "row_index": 0,
+                  "relevance": "Relevant",
+                  "primary_category": "Genetics",
+                  "secondary_categories": ["General and Reviews"],
+                  "confidence": "High",
+                  "rationale": "Brief rationale."
+                }}
+              ]
+            }}
+
+            If an article is not related to CFC, CFC-associated RAS/MAPK mechanisms, or a RASopathy comparison that informs CFC, mark it Not relevant.
+            Do not mark articles Not relevant merely because they were found in Google Sheets.
+            """
+        ).strip()
+
+        try:
+            response = client.responses.create(model=model_name, input=prompt)
+            payload = parse_json_response(getattr(response, "output_text", ""))
+            assignments = payload.get("articles", [])
+        except Exception as exc:
+            assignments = []
+            for idx, row in batch.iterrows():
+                output.at[idx, "OpenAI_Relevance_Decision"] = "Possibly relevant"
+                output.at[idx, "OpenAI_Primary_Category"] = str(row.get("Deep_Learning_Top_Category", ""))
+                output.at[idx, "OpenAI_Secondary_Categories"] = str(row.get("Deep_Learning_Suggested_Categories", ""))
+                output.at[idx, "OpenAI_Confidence"] = "Low"
+                output.at[idx, "OpenAI_Rationale"] = f"OpenAI review failed for this batch; fallback used deep learning. Error: {type(exc).__name__}"
+
+        for item in assignments:
+            row_index = item.get("row_index")
+            if row_index not in output.index:
+                continue
+            secondary = item.get("secondary_categories", [])
+            if isinstance(secondary, list):
+                secondary_text = ", ".join(str(value) for value in secondary)
+            else:
+                secondary_text = str(secondary or "")
+            output.at[row_index, "OpenAI_Relevance_Decision"] = str(item.get("relevance", "")).strip()
+            output.at[row_index, "OpenAI_Primary_Category"] = str(item.get("primary_category", "")).strip()
+            output.at[row_index, "OpenAI_Secondary_Categories"] = secondary_text
+            output.at[row_index, "OpenAI_Confidence"] = str(item.get("confidence", "")).strip()
+            output.at[row_index, "OpenAI_Rationale"] = str(item.get("rationale", "")).strip()
+    return output
+
+
+def choose_system_decision(row: Any) -> tuple[str, str, str, str, str, str]:
+    openai_relevance = str(row.get("OpenAI_Relevance_Decision", "") or "").strip()
+    openai_category = str(row.get("OpenAI_Primary_Category", "") or "").strip()
+    openai_secondary = str(row.get("OpenAI_Secondary_Categories", "") or "").strip()
+    openai_confidence = str(row.get("OpenAI_Confidence", "") or "").strip()
+    dl_category = str(row.get("Deep_Learning_Top_Category", "") or "").strip()
+    dl_score = row.get("Deep_Learning_Top_Score", "")
+    google_found = str(row.get("Google_Sheets_Found", "") or "").strip()
+    zotero_found = str(row.get("Zotero_Found", "") or "").strip()
+    zotero_category = str(row.get("Zotero_Current_Category", "") or "").strip()
+
+    relevance = openai_relevance if openai_relevance in {"Relevant", "Possibly relevant", "Not relevant"} else "Possibly relevant"
+    primary_category = openai_category if openai_category in SECTIONS else dl_category
+    confidence = openai_confidence or "Medium"
+    rationale_parts = []
+    if row.get("OpenAI_Rationale"):
+        rationale_parts.append(str(row.get("OpenAI_Rationale")))
+    if dl_category:
+        rationale_parts.append(f"Deep learning top category: {dl_category} ({dl_score}).")
+    rationale = " ".join(rationale_parts).strip()
+
+    flags = []
+    if relevance == "Not relevant":
+        flags.append("Not relevant")
+    elif zotero_found == "No" and google_found == "Yes":
+        flags.append("Previously screened but not in Zotero")
+    elif zotero_found == "Yes" and zotero_category == "unfiled":
+        flags.append("In Zotero but unfiled")
+    elif zotero_found == "Yes":
+        flags.append("Already in Zotero")
+    else:
+        flags.append("New relevant candidate")
+
+    if primary_category and zotero_category and zotero_category not in {"not in Zotero", "unfiled"} and primary_category not in zotero_category:
+        flags.append("Category mismatch")
+    if openai_category and dl_category and openai_category != dl_category:
+        flags.append("OpenAI/deep learning category mismatch")
+
+    explanation = "; ".join(flags)
+    return relevance, rationale, primary_category, openai_secondary, confidence, explanation
+
+
+def finalize_review_comparison_decisions(df: DataFrame) -> DataFrame:
+    output = df.copy()
+    if output.empty:
+        for column in [
+            "System_Relevance_Decision",
+            "System_Relevance_Rationale",
+            "System_Primary_Category",
+            "System_Secondary_Categories",
+            "System_Confidence",
+            "Comparison_Explanation",
+            "Comparison_Flag",
+            "Reviewer_Relevance",
+            "Reviewer_Final_Category",
+            "Reviewer_Action",
+            "Reviewer_Notes",
+        ]:
+            output[column] = ""
+        return output
+
+    decisions = output.apply(choose_system_decision, axis=1, result_type="expand")
+    decisions.columns = [
+        "System_Relevance_Decision",
+        "System_Relevance_Rationale",
+        "System_Primary_Category",
+        "System_Secondary_Categories",
+        "System_Confidence",
+        "Comparison_Explanation",
+    ]
+    for column in decisions.columns:
+        output[column] = decisions[column]
+    output["Comparison_Flag"] = output["Comparison_Explanation"].str.split(";").str[0]
+    output["Reviewer_Relevance"] = output["System_Relevance_Decision"]
+    output["Reviewer_Final_Category"] = output["System_Primary_Category"]
+    output["Reviewer_Action"] = ""
+    output["Reviewer_Notes"] = ""
+    return output
+
+
+def build_review_comparison_rows(
+    records: list[dict],
+    pmid_categories: dict[str, list[str]],
+    zotero_index: dict[str, dict[str, dict[str, str]]],
+    screening_history: dict[str, dict[str, dict[str, str]]],
+) -> DataFrame:
+    rows = []
+    zotero_pmids = set(zotero_index.get("pmid", {}))
+    for record in records:
+        medline = record.get("MedlineCitation", {})
+        pmid = str(medline.get("PMID", ""))
+        matched_categories = pmid_categories.get(pmid, [])
+        primary_section_name = matched_categories[0] if matched_categories else "General and Reviews"
+        primary_section = SECTIONS.get(primary_section_name, SECTIONS["General and Reviews"])
+        row = parse_pubmed_article(record, primary_section, zotero_pmids, screening_history)
+        history_match = lookup_history_match(row["PMID"], row["Title"], screening_history, row.get("DOI", ""))
+        zotero_match = lookup_zotero_match(row["PMID"], row["Title"], row.get("DOI", ""), zotero_index) or {}
+
+        row["Matched_Categories"] = ", ".join(matched_categories) if matched_categories else primary_section.name
+        row["Google_Sheets_Found"] = "Yes" if history_match else "No"
+        row["Google_Sheets_Decision"] = history_match.get("decision", "") if history_match else ""
+        row["Google_Sheets_Category"] = history_match.get("category", "") if history_match else ""
+        row["Google_Sheets_Notes"] = history_match.get("notes", "") if history_match else ""
+        row["Google_Sheets_Source_Row"] = history_match.get("source", "") if history_match else ""
+        row["Zotero_Found"] = zotero_match.get("found", "No")
+        row["Zotero_Current_Category"] = zotero_match.get("category", "not in Zotero")
+        row["Zotero_File_Status"] = zotero_match.get("file_status", "not in Zotero")
+        row["Zotero_Item_Key"] = zotero_match.get("item_key", "")
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def build_review_deep_research_prompt(report: DataFrame) -> str:
+    sample = report[report["System_Relevance_Decision"].isin(["Relevant", "Possibly relevant"])].head(75)
+    article_lines = []
+    for _, row in sample.iterrows():
+        article_lines.append(
+            f"- PMID {row.get('PMID', '')}: {row.get('Title', '')} "
+            f"({row.get('Publication_Year', '')}). Relevance: {row.get('System_Relevance_Decision', '')}. "
+            f"Suggested category: {row.get('System_Primary_Category', '')}. "
+            f"Zotero: {row.get('Zotero_Found', '')} / {row.get('Zotero_Current_Category', '')}. "
+            f"Google Sheets: {row.get('Google_Sheets_Found', '')} / {row.get('Google_Sheets_Decision', '')}. "
+            f"URL: {row.get('PubMed_URL', '')}"
+        )
+    articles = "\n".join(article_lines) if article_lines else "No relevant or possibly relevant candidates were found."
+    return textwrap.dedent(
+        f"""
+        Conduct a deep research quality check for a CFC syndrome review-comparison workbook covering PubMed articles from {REVIEW_COMPARISON_YEARS[0]}-{REVIEW_COMPARISON_YEARS[1]}.
+
+        The workbook compares OpenAI category assignment, deep learning similarity, Google Sheets screening history, and Zotero folder status.
+
+        Category definitions and inclusion/exclusion criteria:
+        {json.dumps(openai_review_categories_payload(), indent=2)}
+
+        Candidate articles:
+        {articles}
+
+        Produce:
+        1. A concise assessment of whether the relevance and category assignments look reasonable.
+        2. Articles most likely missing from Zotero, especially those found in Google Sheets but not Zotero.
+        3. Articles whose proposed category conflicts with Zotero or Google Sheets.
+        4. Any categories whose criteria may need refinement.
+        Cite PubMed IDs for article-specific claims.
+        """
+    ).strip()
+
+
+def review_comparison_export_frame(report: DataFrame) -> DataFrame:
+    export = report.copy()
+    blank = pd.Series([""] * len(export), index=export.index)
+    google_decision = export["Google_Sheets_Decision"] if "Google_Sheets_Decision" in export else blank
+    google_screen = google_decision.fillna("").map(screening_direction)
+    if "OpenAI_Relevance_Decision" in export:
+        openai_relevance = export["OpenAI_Relevance_Decision"].fillna("")
+    elif "System_Relevance_Decision" in export:
+        openai_relevance = export["System_Relevance_Decision"].fillna("")
+    else:
+        openai_relevance = blank
+    openai_screen = openai_relevance.map(screening_direction)
+    export["Human_OpenAI_Match"] = [
+        "Yes" if human and ai and human == ai else ("No" if human and ai else "")
+        for human, ai in zip(google_screen, openai_screen)
+    ]
+    export["OpenAI_Screening_Display"] = openai_relevance.map(
+        {
+            "Relevant": "Screen in",
+            "Possibly relevant": "Needs review",
+            "Not relevant": "Screen out",
+        }
+    ).fillna(openai_relevance)
+    zotero_found = export["Zotero_Found"].fillna("") if "Zotero_Found" in export else blank
+    zotero_category = export["Zotero_Current_Category"].fillna("") if "Zotero_Current_Category" in export else blank
+    export["Zotero_Category_Display"] = zotero_category.where(zotero_found.eq("Yes"), "")
+    for source_column, _ in REVIEW_COMPARISON_EXPORT_COLUMNS:
+        if source_column not in export:
+            export[source_column] = ""
+    source_columns = [source_column for source_column, _ in REVIEW_COMPARISON_EXPORT_COLUMNS]
+    header_map = dict(REVIEW_COMPARISON_EXPORT_COLUMNS)
+    return export[source_columns].rename(columns=header_map)
+
+
+def write_review_comparison_workbook(
+    path: Path,
+    report: DataFrame,
+    run_log: DataFrame,
+    deep_research_prompt: str,
+    openai_run: dict[str, str] | None,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    report = report.copy()
+    sort_columns = [column for column in ("System_Primary_Category", "System_Relevance_Decision", "Title") if column in report]
+    if sort_columns:
+        report = report.sort_values(sort_columns, kind="stable").reset_index(drop=True)
+
+    relevant = report[report["System_Relevance_Decision"].isin(["Relevant", "Possibly relevant"])].copy()
+    not_relevant = report[report["System_Relevance_Decision"].eq("Not relevant")].copy()
+    needs_review = report[
+        report["System_Relevance_Decision"].eq("Possibly relevant")
+        | report["Comparison_Explanation"].str.contains("mismatch|unfiled|Previously screened", case=False, na=False)
+    ].copy()
+    summary = (
+        report.groupby(["System_Primary_Category", "System_Relevance_Decision"], dropna=False)
+        .size()
+        .reset_index(name="Article_Count")
+        .sort_values(["System_Primary_Category", "System_Relevance_Decision"])
+    )
+
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        review_comparison_export_frame(report).to_excel(writer, sheet_name="Review_Comparison", index=False)
+        review_comparison_export_frame(relevant).to_excel(writer, sheet_name="Relevant_Candidates", index=False)
+        review_comparison_export_frame(not_relevant).to_excel(writer, sheet_name="Not_Relevant", index=False)
+        review_comparison_export_frame(needs_review).to_excel(writer, sheet_name="Needs_Review", index=False)
+        summary.rename(
+            columns={
+                "System_Primary_Category": "Suggested Category",
+                "System_Relevance_Decision": "Relevance",
+            }
+        ).to_excel(writer, sheet_name="Category_Summary", index=False)
+        criteria_frame().to_excel(writer, sheet_name="Criteria", index=False)
+        pd.DataFrame({"Deep_Research_Brief": [deep_research_prompt]}).to_excel(writer, sheet_name="Deep_Research_Brief", index=False)
+        if openai_run:
+            pd.DataFrame([openai_run]).to_excel(writer, sheet_name="OpenAI_Run", index=False)
+        run_log.to_excel(writer, sheet_name="Run_Log", index=False)
+    apply_review_comparison_formatting(path)
+
+
+def apply_review_comparison_formatting(path: Path) -> None:
+    from openpyxl import load_workbook
+    from openpyxl.formatting.rule import FormulaRule
+    from openpyxl.styles import Font, PatternFill
+    from openpyxl.utils import get_column_letter
+    from openpyxl.worksheet.datavalidation import DataValidation
+
+    wb = load_workbook(path)
+    sheets_to_format = ["Review_Comparison", "Relevant_Candidates", "Not_Relevant", "Needs_Review"]
+    relevance_values = "Relevant,Possibly relevant,Not relevant"
+    action_values = "Needs reviewed,Approved,Not approved"
+
+    relevance_fills = {
+        "Relevant": PatternFill(start_color="D9EAD3", end_color="D9EAD3", fill_type="solid"),
+        "Possibly relevant": PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid"),
+        "Not relevant": PatternFill(start_color="F4CCCC", end_color="F4CCCC", fill_type="solid"),
+    }
+    for sheet_name in sheets_to_format:
+        if sheet_name not in wb.sheetnames:
+            continue
+        ws = wb[sheet_name]
+        headers = [cell.value for cell in ws[1]]
+        max_row = max(ws.max_row, 2)
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = ws.dimensions
+        for cell in ws[1]:
+            cell.font = Font(bold=True)
+
+        if "Reviewer Relevance" in headers:
+            col = get_column_letter(headers.index("Reviewer Relevance") + 1)
+            validation = DataValidation(type="list", formula1=f'"{relevance_values}"', allow_blank=True)
+            ws.add_data_validation(validation)
+            validation.add(f"{col}2:{col}{max_row}")
+        if "Reviewer Action" in headers:
+            col = get_column_letter(headers.index("Reviewer Action") + 1)
+            validation = DataValidation(type="list", formula1=f'"{action_values}"', allow_blank=True)
+            ws.add_data_validation(validation)
+            validation.add(f"{col}2:{col}{max_row}")
+        if "Relevance" in headers:
+            decision_col = get_column_letter(headers.index("Relevance") + 1)
+            decision_range = f"{decision_col}2:{decision_col}{max_row}"
+            for decision, fill in relevance_fills.items():
+                ws.conditional_formatting.add(
+                    decision_range,
+                    FormulaRule(formula=[f'${decision_col}2="{decision}"'], fill=fill),
+                )
+        if "Match?" in headers:
+            match_col = get_column_letter(headers.index("Match?") + 1)
+            match_range = f"{match_col}2:{match_col}{max_row}"
+            ws.conditional_formatting.add(
+                match_range,
+                FormulaRule(formula=[f'${match_col}2="Yes"'], fill=PatternFill(start_color="D9EAD3", end_color="D9EAD3", fill_type="solid")),
+            )
+        for category_header in ("If in Zotero - Category", "OpenAI Assigned Category"):
+            if category_header in headers:
+                category_col = headers.index(category_header) + 1
+                for row in range(2, max_row + 1):
+                    category = str(ws.cell(row=row, column=category_col).value or "")
+                    color = CATEGORY_COLORS.get(category, "FFFFFF")
+                    ws.cell(row=row, column=category_col).fill = PatternFill(start_color=color, end_color=color, fill_type="solid")
+        widths = {
+            "PubMed ID": 12,
+            "Article Title": 60,
+            "Date": 14,
+            "Relevance": 18,
+            "Found in Sheets?": 18,
+            "Found in Zotero?": 18,
+            "Match?": 12,
+            "OpenAI Screening In or Out": 26,
+            "If in Zotero - Category": 30,
+            "OpenAI Assigned Category": 26,
+        }
+        for index, header in enumerate(headers, start=1):
+            ws.column_dimensions[get_column_letter(index)].width = widths.get(str(header), 18)
+
+    if "Category_Summary" in wb.sheetnames:
+        ws = wb["Category_Summary"]
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = ws.dimensions
+        for cell in ws[1]:
+            cell.font = Font(bold=True)
+    wb.save(path)
+
+
+def run_review_comparison(args: argparse.Namespace) -> None:
+    from_year, to_year = REVIEW_COMPARISON_YEARS
+    Entrez.email = require_env("ENTREZ_EMAIL")
+    require_env("OPENAI_API_KEY")
+
+    screening_history = load_screening_history(args.screening_history)
+    zotero_index = {}
+    if not args.skip_zotero:
+        zotero_index = fetch_zotero_index(require_env("ZOTERO_GROUP_ID"), require_env("ZOTERO_API_KEY"))
+
+    pmid_categories: dict[str, list[str]] = {}
+    section_counts: list[dict[str, object]] = []
+    for section in SECTIONS.values():
+        section_pmids = search_pubmed(section.query, args.retmax, from_year, to_year)
+        section_counts.append({"Section": section.name, "PubMed_Records_Found": len(section_pmids)})
+        for pmid in section_pmids:
+            pmid_categories.setdefault(pmid, [])
+            if section.name not in pmid_categories[pmid]:
+                pmid_categories[pmid].append(section.name)
+
+    pubmed_pmids = list(pmid_categories)
+    records = fetch_pubmed_records(pubmed_pmids) if pubmed_pmids else []
+    report = build_review_comparison_rows(records, pmid_categories, zotero_index, screening_history)
+    report = filter_report_year_range(report, from_year, to_year)
+    report = add_deep_learning_review_columns(report, args.embedding_model, max(args.suggested_labels, 3))
+    report = add_openai_review_columns(report, args.openai_review_batch_size)
+    report = finalize_review_comparison_decisions(report)
+
+    deep_research_prompt = build_review_deep_research_prompt(report)
+    openai_run = None if args.skip_openai_deep_research else launch_openai_deep_research(deep_research_prompt)
+    log_rows = [
+        {"Field": "Mode", "Value": "2017-2022 review comparison"},
+        {"Field": "Publication date filter", "Value": format_year_filter(from_year, to_year)},
+        {"Field": "Unique PubMed records found", "Value": len(pubmed_pmids)},
+        {"Field": "Rows in report", "Value": len(report)},
+        {"Field": "Google Sheets matches", "Value": int((report.get("Google_Sheets_Found") == "Yes").sum()) if not report.empty else 0},
+        {"Field": "Zotero matches", "Value": int((report.get("Zotero_Found") == "Yes").sum()) if not report.empty else 0},
+        {"Field": "Generated", "Value": time.ctime()},
+    ]
+    for item in section_counts:
+        log_rows.append({"Field": f"PubMed records found: {item['Section']}", "Value": item["PubMed_Records_Found"]})
+    run_log = pd.DataFrame(
+        log_rows
+    )
+    output_path = Path(args.output)
+    write_review_comparison_workbook(output_path, report, run_log, deep_research_prompt, openai_run)
+
+    print("Mode: 2017-2022 review comparison")
+    print(f"Publication date filter: {format_year_filter(from_year, to_year)}")
+    print(f"Unique PubMed records found: {len(pubmed_pmids)}")
+    print(f"Rows written: {len(report)}")
+    print(f"Google Sheets matches: {int((report.get('Google_Sheets_Found') == 'Yes').sum()) if not report.empty else 0}")
+    print(f"Zotero matches: {int((report.get('Zotero_Found') == 'Yes').sum()) if not report.empty else 0}")
+    if openai_run:
+        print(f"OpenAI deep research submitted: {openai_run.get('response_id', '')} ({openai_run.get('status', '')})")
+    print(f"Workbook written: {output_path.resolve()}")
 
 
 def merge_with_existing(existing: DataFrame, new_rows: DataFrame) -> DataFrame:
@@ -935,6 +1586,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Search every configured Zotero/library section and export one combined workbook.",
     )
+    parser.add_argument(
+        "--review-comparison-2017-2022",
+        action="store_true",
+        help="Create the 2017-2022 all-category comparison workbook using PubMed, OpenAI, deep learning, Google Sheets history, and Zotero status.",
+    )
     parser.add_argument("--output", default="reports/CFC_Master_Review_Report.xlsx", help="Workbook output path.")
     parser.add_argument("--retmax", type=int, default=10000, help="Maximum PubMed IDs to return.")
     parser.add_argument(
@@ -959,6 +1615,12 @@ def parse_args() -> argparse.Namespace:
         help="Sentence-transformers model used for suggested labels.",
     )
     parser.add_argument("--suggested-labels", type=int, default=2, help="Number of secondary labels to suggest.")
+    parser.add_argument(
+        "--openai-review-batch-size",
+        type=int,
+        default=5,
+        help="Number of articles to send per OpenAI category-review request in review comparison mode.",
+    )
     parser.add_argument("--skip-zotero", action="store_true", help="Skip Zotero API lookup and mark all as not found in Zotero.")
     parser.add_argument(
         "--screening-history",
@@ -982,6 +1644,12 @@ def main() -> None:
     args = parse_args()
     load_env_file()
     load_runtime_dependencies()
+    if args.review_comparison_2017_2022:
+        if args.output == "reports/CFC_Master_Review_Report.xlsx":
+            args.output = "reports/CFC_2017_2022_Review_Comparison.xlsx"
+        run_review_comparison(args)
+        return
+
     category = normalize_category(args.category)
     run_all_categories = args.all_categories or category.lower() in {"all", "all categories"}
     from_year = args.from_year if args.from_year is not None else (args.since_year or None)
