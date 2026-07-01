@@ -78,7 +78,7 @@ uv run python cfc_research_library.py --all-categories --since-year 2025 --outpu
 
 Useful categories include:
 
-`Allergy and Immunology`, `Cardiology`, `Dermatology`, `Development and Behavior`, `Endocrinology`, `Gastroenterology`, `General and Reviews`, `Genetics`, `Gynecology`, `Neurology`, `Oncology`, `Ophthalmology`, `Orthopedic`, `Otolaryngology`, `Pulmonology`, `Research Studies`, `Seizures`, and `Treatments`.
+`Allergy and Immunology`, `Cardiology`, `Dermatology`, `Development and Behavior`, `Endocrinology`, `Gastroenterology`, `General and Reviews`, `Genetics`, `Growth`, `Gynecology`, `Neurology`, `Oncology`, `Ophthalmology`, `Orthopedic`, `Otolaryngology`, `Pulmonology`, `Research Studies`, `Seizures`, and `Treatments`.
 
 The workbook contains:
 

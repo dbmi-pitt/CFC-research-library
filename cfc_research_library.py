@@ -58,6 +58,7 @@ CATEGORY_COLORS = {
     "Gastroenterology": "FFF2CC",
     "General and Reviews": "EADCF8",
     "Genetics": "CFE2F3",
+    "Growth": "E2F0CB",
     "Gynecology": "FCE4EC",
     "Neurology": "C9DAF8",
     "Oncology": "E6B8AF",
@@ -146,10 +147,10 @@ SECTIONS: dict[str, LibrarySection] = {
     ),
     "Endocrinology": LibrarySection(
         "Endocrinology",
-        "Hormonal, metabolic, renal, and growth-related abnormalities in CFC.",
-        "Research examining hormonal, metabolic, renal, or growth-related abnormalities in CFC syndrome, including studies using CFC-associated mutations to model endocrine dysfunction.",
-        "Endocrine studies on other RASopathies without CFC data, or general metabolic pathway papers not linked to CFC clinical features.",
-        f'(("Endocrine System Diseases"[MeSH Terms] OR "Growth Disorders"[MeSH Terms] OR hormone[All Fields] OR renal[All Fields] OR metabolic[All Fields]) AND {cfc_clause()})',
+        "Hormonal, metabolic, and organ-related abnormalities associated with CFC syndrome and other RASopathies, including endocrine function, growth regulation, pubertal timing, gastrointestinal and renal organ development, feeding difficulties, failure to thrive, growth hormone deficiency, delayed or atypical puberty, renal anomalies, and electrolyte imbalances.",
+        "Studies examining hormonal regulation, growth hormone function, pubertal development, metabolic abnormalities, or endocrine organ involvement in individuals with CFC; mechanistic work using CFC-associated mutations to model endocrine dysfunction.",
+        "Endocrine studies focused solely on other RASopathies without CFC data; general metabolic or hormonal pathway papers not linked to CFC-specific clinical features.",
+        f'(("Endocrine System Diseases"[MeSH Terms] OR hormone[All Fields] OR renal[All Fields] OR metabolic[All Fields] OR puberty[All Fields] OR pubertal[All Fields] OR "growth hormone"[All Fields] OR electrolyte[All Fields]) AND {cfc_clause()})',
     ),
     "Gastroenterology": LibrarySection(
         "Gastroenterology",
@@ -171,6 +172,13 @@ SECTIONS: dict[str, LibrarySection] = {
         "Studies that present genetic analyses, mutation identification, or molecular characterization of CFC syndrome, including work that uses CFC-associated RAS/MAPK mutations to explore developmental mechanisms.",
         "Genetic studies focused solely on other RASopathies without CFC data, or general molecular pathway papers not directly linked to CFC-specific mutations or phenotypes.",
         f'(("Genetic Phenomena"[MeSH Terms] OR genetics[Subheading] OR mutation[All Fields] OR BRAF[All Fields] OR MAP2K1[All Fields] OR MAP2K2[All Fields] OR KRAS[All Fields]) AND {cfc_clause()})',
+    ),
+    "Growth": LibrarySection(
+        "Growth",
+        "Physical growth patterns, stature, skeletal maturation, and pubertal development across CFC syndrome and the broader Noonan-spectrum RASopathies, including growth hormone signaling, bone age progression, linear growth velocity, timing of puberty, short stature, delayed or disproportionate growth, growth hormone deficiency, and atypical pubertal onset.",
+        "Studies addressing growth, stature, bone age, or pubertal development in CFC or Noonan-spectrum RASopathies; research using CFC-associated or Noonan-associated RAS/MAPK mutations to model growth hormone or pubertal regulation.",
+        "Growth studies unrelated to RAS/MAPK signaling or lacking CFC/Noonan-spectrum relevance; general endocrinology papers without developmental or pubertal data tied to RASopathies.",
+        '((growth[All Fields] OR stature[All Fields] OR "short stature"[All Fields] OR "bone age"[All Fields] OR "growth hormone"[All Fields] OR puberty[All Fields] OR pubertal[All Fields] OR "linear growth"[All Fields]) AND (cardiofaciocutaneous[All Fields] OR "cardio-facio-cutaneous"[All Fields] OR "CFC syndrome"[All Fields] OR "Noonan Syndrome"[MeSH Terms] OR "noonan spectrum"[All Fields] OR RASopathies[MeSH Terms]))',
     ),
     "Gynecology": LibrarySection(
         "Gynecology",
