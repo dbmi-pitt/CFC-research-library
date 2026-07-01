@@ -72,18 +72,28 @@ if not exist ".venv\Scripts\python.exe" (
   )
 )
 
-call ".venv\Scripts\activate.bat"
-
 echo Installing or updating required libraries...
-".venv\Scripts\python.exe" -m pip install --upgrade pip >> "%LOG_FILE%" 2>&1
-if errorlevel 1 goto failed
-".venv\Scripts\python.exe" -m pip install -r requirements.txt >> "%LOG_FILE%" 2>&1
-if errorlevel 1 goto failed
+where uv >nul 2>nul
+if not errorlevel 1 (
+  uv pip install -r requirements.txt >> "%LOG_FILE%" 2>&1
+  if errorlevel 1 goto failed
+) else (
+  ".venv\Scripts\python.exe" -m pip install --upgrade pip >> "%LOG_FILE%" 2>&1
+  if errorlevel 1 goto failed
+  ".venv\Scripts\python.exe" -m pip install -r requirements.txt >> "%LOG_FILE%" 2>&1
+  if errorlevel 1 goto failed
+)
 
 echo.
 echo Running all-category research update...
-".venv\Scripts\python.exe" cfc_research_library.py --all-categories --since-year 2025 --output reports\CFC_All_Categories_Master_Review_Report.xlsx >> "%LOG_FILE%" 2>&1
-if errorlevel 1 goto failed
+where uv >nul 2>nul
+if not errorlevel 1 (
+  uv run python cfc_research_library.py --all-categories --since-year 2025 --output reports\CFC_All_Categories_Master_Review_Report.xlsx >> "%LOG_FILE%" 2>&1
+  if errorlevel 1 goto failed
+) else (
+  ".venv\Scripts\python.exe" cfc_research_library.py --all-categories --since-year 2025 --output reports\CFC_All_Categories_Master_Review_Report.xlsx >> "%LOG_FILE%" 2>&1
+  if errorlevel 1 goto failed
+)
 
 echo.
 echo Done.

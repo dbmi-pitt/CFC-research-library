@@ -461,16 +461,33 @@ def fetch_zotero_pmids(group_id: str, api_key: str) -> set[str]:
     return pmids
 
 
-def publication_date_filter(year: int | None) -> tuple[str | None, str | None]:
-    if not year:
+def publication_date_filter(from_year: int | None, to_year: int | None) -> tuple[str | None, str | None]:
+    if not from_year and not to_year:
         return None, None
-    if year < 1800 or year > date.today().year:
-        raise RuntimeError(f"--since-year must be between 1800 and {date.today().year}.")
-    return f"{year}/01/01", date.today().strftime("%Y/%m/%d")
+    current_year = date.today().year
+    if from_year and (from_year < 1800 or from_year > current_year):
+        raise RuntimeError(f"--from-year must be between 1800 and {current_year}.")
+    if to_year and (to_year < 1800 or to_year > current_year):
+        raise RuntimeError(f"--to-year must be between 1800 and {current_year}.")
+    from_year = from_year or 1800
+    to_year = to_year or current_year
+    if from_year > to_year:
+        raise RuntimeError("--from-year must be earlier than or equal to --to-year.")
+    return f"{from_year}/01/01", f"{to_year}/12/31"
 
 
-def search_pubmed(query: str, retmax: int, since_year: int | None) -> list[str]:
-    mindate, maxdate = publication_date_filter(since_year)
+def format_year_filter(from_year: int | None, to_year: int | None) -> str:
+    if from_year and to_year:
+        return f"{from_year}-{to_year}"
+    if from_year:
+        return f"{from_year} onward"
+    if to_year:
+        return f"through {to_year}"
+    return "all years"
+
+
+def search_pubmed(query: str, retmax: int, from_year: int | None, to_year: int | None) -> list[str]:
+    mindate, maxdate = publication_date_filter(from_year, to_year)
     search_kwargs = {
         "db": "pubmed",
         "term": query,
@@ -640,12 +657,17 @@ def merge_with_existing(existing: DataFrame, new_rows: DataFrame) -> DataFrame:
     return refreshed.drop_duplicates(subset=["PMID"], keep="first")
 
 
-def filter_report_since_year(report: DataFrame, since_year: int | None) -> DataFrame:
-    if not since_year or report.empty or "Publication_Year" not in report:
+def filter_report_year_range(report: DataFrame, from_year: int | None, to_year: int | None) -> DataFrame:
+    if (not from_year and not to_year) or report.empty or "Publication_Year" not in report:
         return report
     filtered = report.copy()
     years = pd.to_numeric(filtered["Publication_Year"], errors="coerce")
-    return filtered[years >= since_year].reset_index(drop=True)
+    mask = pd.Series(True, index=filtered.index)
+    if from_year:
+        mask = mask & (years >= from_year)
+    if to_year:
+        mask = mask & (years <= to_year)
+    return filtered[mask].reset_index(drop=True)
 
 
 def load_existing(path: Path) -> tuple[DataFrame, int]:
@@ -763,7 +785,8 @@ def write_workbook(
     run_count: int,
     section: LibrarySection | None,
     prompt: str,
-    since_year: int | None,
+    from_year: int | None,
+    to_year: int | None,
     openai_run: dict[str, str] | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -778,7 +801,7 @@ def write_workbook(
             [f"Report generated on: {time.ctime()}"],
             [f"Run Count: {run_count}"],
             [f"Primary Category: {section.name if section else 'All categories'}"],
-            [f"Publication Date Filter: {since_year or 'all years'} onward"],
+            [f"Publication Date Filter: {format_year_filter(from_year, to_year)}"],
             [""],
             ["How to Use This File"],
             ["1. Review_Report contains candidate articles and preserves Reviewer_Notes across runs."],
@@ -792,7 +815,7 @@ def write_workbook(
         [
             {"Field": "Category", "Value": section.name if section else "All categories"},
             {"Field": "PubMed Query", "Value": section.query if section else "Multiple category queries"},
-            {"Field": "Publication date filter", "Value": f"{since_year or 'all years'} onward"},
+            {"Field": "Publication date filter", "Value": format_year_filter(from_year, to_year)},
             {"Field": "Rows in report", "Value": len(report)},
             {"Field": "Generated", "Value": time.ctime()},
         ]
@@ -921,6 +944,16 @@ def parse_args() -> argparse.Namespace:
         help="Only search PubMed records published from this year onward. Use 0 to search all years.",
     )
     parser.add_argument(
+        "--from-year",
+        type=int,
+        help="First publication year to include. Overrides --since-year when provided.",
+    )
+    parser.add_argument(
+        "--to-year",
+        type=int,
+        help="Last publication year to include. Use with --from-year for a bounded date range.",
+    )
+    parser.add_argument(
         "--embedding-model",
         default="microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext",
         help="Sentence-transformers model used for suggested labels.",
@@ -951,7 +984,8 @@ def main() -> None:
     load_runtime_dependencies()
     category = normalize_category(args.category)
     run_all_categories = args.all_categories or category.lower() in {"all", "all categories"}
-    since_year = args.since_year or None
+    from_year = args.from_year if args.from_year is not None else (args.since_year or None)
+    to_year = args.to_year
     if not run_all_categories and category not in SECTIONS:
         choices = ", ".join(sorted(SECTIONS))
         raise SystemExit(f"Unknown category '{args.category}'. Choose one of: {choices}")
@@ -975,7 +1009,7 @@ def main() -> None:
     pmid_categories: dict[str, list[str]] = {}
     section_counts: list[dict[str, object]] = []
     for active_section in sections_to_run:
-        section_pmids = search_pubmed(active_section.query, args.retmax, since_year)
+        section_pmids = search_pubmed(active_section.query, args.retmax, from_year, to_year)
         section_counts.append({"Section": active_section.name, "PubMed_Records_Found": len(section_pmids)})
         for pmid in section_pmids:
             pmid_categories.setdefault(pmid, [])
@@ -1001,15 +1035,16 @@ def main() -> None:
     if not args.include_previously_screened:
         rows = [row for row in rows if not row["History_Match"]]
     new_df = pd.DataFrame(rows, columns=FINAL_COLUMNS)
+    new_df = filter_report_year_range(new_df, from_year, to_year)
     new_df = add_suggested_labels(new_df, args.embedding_model, args.suggested_labels)
     report = merge_with_existing(existing, new_df)
-    report = filter_report_since_year(report, since_year)
+    report = filter_report_year_range(report, from_year, to_year)
     prompt = build_deep_research_prompt(section, new_df)
     openai_run = None if args.skip_openai_deep_research else launch_openai_deep_research(prompt)
-    write_workbook(output_path, report, run_count, section, prompt, since_year, openai_run)
+    write_workbook(output_path, report, run_count, section, prompt, from_year, to_year, openai_run)
 
     print(f"Category: {section.name if section else 'All categories'}")
-    print(f"Publication date filter: {since_year or 'all years'} onward")
+    print(f"Publication date filter: {format_year_filter(from_year, to_year)}")
     print(f"Unique PubMed records found: {len(pubmed_pmids)}")
     if run_all_categories:
         print("Section counts:")
