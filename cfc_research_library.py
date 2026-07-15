@@ -20,8 +20,9 @@ from dataclasses import asdict, dataclass
 from datetime import date
 from pathlib import Path
 from typing import Any, Iterable, TypeAlias
-from urllib.parse import urlparse
-from urllib.request import urlretrieve
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote, urlparse
+from urllib.request import Request, urlopen, urlretrieve
 
 pd = None
 Entrez = None
@@ -102,6 +103,53 @@ GENERAL_EXCLUSION_CRITERIA = [
     "Is unrelated to humans, CFC-relevant model systems, clinical care, diagnosis, treatment, or literature synthesis.",
 ]
 
+EXCLUDED_COMPARISON_FOLDERS = {"Exclusion", "Excluded", "Historical Articles", "Conferences"}
+MAX_ZOTERO_EXAMPLES_PER_CATEGORY = 5
+
+CATEGORY_ALIASES = {
+    "allergy": "Allergy and Immunology",
+    "allergy and immunology": "Allergy and Immunology",
+    "cardio": "Cardiology",
+    "cardiology": "Cardiology",
+    "derm": "Dermatology",
+    "dermatology": "Dermatology",
+    "development": "Development and Behavior",
+    "development and behavior": "Development and Behavior",
+    "behavior": "Development and Behavior",
+    "endocrinology": "Endocrinology",
+    "gastro": "Gastroenterology",
+    "gastroenterology": "Gastroenterology",
+    "general": "General and Reviews",
+    "general_and_reviews": "General and Reviews",
+    "general and reviews": "General and Reviews",
+    "reviews": "General and Reviews",
+    "genetic": "Genetics",
+    "genetics": "Genetics",
+    "growth": "Growth",
+    "gynecology": "Gynecology",
+    "neuro": "Neurology",
+    "neuology": "Neurology",
+    "neurology": "Neurology",
+    "oncology": "Oncology",
+    "ophthalmology": "Ophthalmology",
+    "orthopedic": "Orthopedic",
+    "orthopedics": "Orthopedic",
+    "ent": "Otolaryngology",
+    "otolaryngology ent": "Otolaryngology",
+    "otolaryngology_ent": "Otolaryngology",
+    "otolaryngology": "Otolaryngology",
+    "pulmonology": "Pulmonology",
+    "research": "Research Studies",
+    "research studies": "Research Studies",
+    "seizure": "Seizures",
+    "seizures": "Seizures",
+    "treatment": "Treatments",
+    "treatments": "Treatments",
+    "exclude": "Excluded",
+    "excluded": "Excluded",
+    "exclusion": "Excluded",
+}
+
 
 @dataclass(frozen=True)
 class LibrarySection:
@@ -140,9 +188,9 @@ SECTIONS: dict[str, LibrarySection] = {
     ),
     "Development and Behavior": LibrarySection(
         "Development and Behavior",
-        "Cognitive, motor, speech, behavioral, and growth-related developmental outcomes in CFC.",
-        "Papers addressing neurodevelopment, cognition, motor milestones, or behavioral phenotypes in individuals with CFC, including mechanistic work connecting RAS/MAPK dysregulation to developmental outcomes.",
-        "Behavioral or developmental studies on other RASopathies without CFC representation, or broad neurodevelopmental research not tied to CFC-relevant mutations.",
+        "Cognitive, motor milestones, speech, behavioral, and growth-related developmental outcomes in CFC.",
+        "Papers addressing motor milestones, cognition, speech/language, or behavioral phenotypes in individuals with CFC, including mechanistic work connecting RAS/MAPK dysregulation to developmental outcomes.",
+        "Behavioral or developmental studies on other RASopathies without CFC representation, or broad motor-milestone research not tied to CFC-relevant mutations.",
         f'(("Developmental Disabilities"[MeSH Terms] OR "Behavioral Symptoms"[MeSH Terms] OR "Intellectual Disability"[MeSH Terms] OR cognition[All Fields] OR behavior[All Fields]) AND {cfc_clause()})',
     ),
     "Endocrinology": LibrarySection(
@@ -161,9 +209,9 @@ SECTIONS: dict[str, LibrarySection] = {
     ),
     "General and Reviews": LibrarySection(
         "General and Reviews",
-        "Foundational, overview, diagnostic, clinical-spectrum, and review papers about CFC within the RASopathy family.",
-        "Foundational papers, clinical overviews, and reviews that explicitly discuss CFC syndrome, its diagnostic criteria, phenotype spectrum, or its place within the RASopathy family.",
-        "Broad RASopathy reviews that do not meaningfully address CFC, or historical papers lacking clinical or genetic relevance to CFC.",
+        "Foundational, overview, diagnostic, clinical-spectrum, guideline, and review papers about CFC within the RASopathy family.",
+        "Foundational papers, clinical overviews, diagnostic criteria or CFC index papers, guidelines, prenatal diagnosis overviews, case reports or case series without a clearly specialty-specific new finding, adult CFC case reports or literature reviews, and RASopathy-wide reviews that meaningfully discuss CFC syndrome, its diagnostic criteria, phenotype spectrum, management, or its place within the RASopathy family.",
+        "Broad RAS/MAPK, cancer, pathway, or RASopathy papers that only mention CFC in passing, only allude to CFC in a figure/table/reference, or do not provide CFC clinical, genetic, diagnostic, management, or meaningful comparison content.",
         f'({cfc_clause()} AND (Review[Publication Type] OR guideline[Publication Type] OR diagnosis[All Fields] OR phenotype[All Fields]))',
     ),
     "Genetics": LibrarySection(
@@ -266,6 +314,327 @@ SECTIONS: dict[str, LibrarySection] = {
     ),
 }
 
+CATEGORY_CLASSIFICATION_GUIDANCE: dict[str, dict[str, list[str]]] = {
+    "Allergy and Immunology": {
+        "include_if": [
+            "Primary objective is immune dysfunction, allergy, hypersensitivity, eczema/atopy, recurrent infection, autoimmunity, or inflammatory phenotype in CFC/RASopathy patients.",
+            "Original cohort/case data include actual CFC participants or CFC-associated RAS/MAPK mutations with immune findings.",
+        ],
+        "exclude_if": [
+            "Immune/allergy terms appear only in a phenotype list or background.",
+            "Study is immunology-focused but lacks CFC data or CFC-relevant interpretation.",
+            "Paper is a broad review without new immune-specific findings.",
+        ],
+        "strong_indicators": ["autoimmune", "autoantibodies", "immunodeficiency", "hypersensitivity", "atopy", "eczema", "recurrent infections", "inflammation"],
+        "negative_examples": [
+            "Broad RASopathy overview listing recurrent infections among many features -> General and Reviews, not Allergy and Immunology.",
+            "Dermatology paper mentioning eczema as a skin finding -> Dermatology unless immune dysfunction is the main outcome.",
+        ],
+    },
+    "Cardiology": {
+        "include_if": [
+            "Primary objective is cardiac disease, cardiac structure/function, rhythm, imaging, intervention, or cardiac outcomes.",
+            "New cardiac phenotype, cardiac cohort, cardiac imaging, cardiomyopathy mechanism, arrhythmia, or surveillance outcome is central.",
+        ],
+        "exclude_if": [
+            "Heart findings appear only in background or phenotype lists.",
+            "Genetics paper only mentions cardiac findings while primary objective is mutation discovery.",
+            "Review/guideline/management overview without new cardiac data.",
+        ],
+        "strong_indicators": ["hypertrophic cardiomyopathy", "pulmonary stenosis", "arrhythmia", "ventricle", "myocardium", "echocardiography", "cardiac MRI", "outflow obstruction"],
+        "negative_examples": [
+            "Clinical management of hypertrophic cardiomyopathy in CFC -> General and Reviews if it is a management review rather than original cardiac research.",
+            "MAP2K1 variant report with cardiac findings -> Genetics if mutation discovery is the primary objective.",
+        ],
+    },
+    "Dermatology": {
+        "include_if": [
+            "Primary objective is skin, hair, nails, cutaneous phenotype, dermatologic natural history, or skin-related mechanism.",
+            "Paper presents new dermatologic findings, prospective dermatology data, or mechanistic cutaneous evidence.",
+        ],
+        "exclude_if": [
+            "Skin findings appear only in broad phenotype background.",
+            "Article is primarily genetics, review, or another organ system and only lists dermatologic symptoms.",
+        ],
+        "strong_indicators": ["cutaneous", "dermatologic", "skin", "hair", "nail", "keratosis", "eczema", "hyperkeratosis", "keratosis pilaris", "ulerythema"],
+        "negative_examples": [
+            "CFC clinical overview with a paragraph on skin -> General and Reviews, not Dermatology.",
+            "Genotype paper listing sparse hair and keratosis -> Genetics unless dermatology is the main outcome.",
+        ],
+    },
+    "Development and Behavior": {
+        "include_if": [
+            "Primary objective is cognition, behavior, speech/language, adaptive function, learning, or motor milestones.",
+            "Study measures developmental or behavioral outcomes as a main endpoint.",
+        ],
+        "exclude_if": [
+            "Developmental delay appears only as background.",
+            "Primary outcome is seizures, neuroimaging, genetics, or growth rather than development/behavior.",
+        ],
+        "strong_indicators": ["behavior", "cognition", "adaptive", "speech", "language", "learning", "motor milestones", "developmental assessment", "intellectual disability"],
+        "negative_examples": [
+            "Epilepsy cohort with developmental delay listed -> Seizures if seizure phenotype is primary.",
+            "Brain MRI paper with developmental context -> Neurology if imaging/brain findings are primary.",
+        ],
+    },
+    "Endocrinology": {
+        "include_if": [
+            "Primary objective is endocrine, hormonal, metabolic, pubertal, renal/electrolyte, growth hormone physiology, or endocrine organ dysfunction.",
+            "Mechanistic work links CFC/RAS/MAPK mutations to endocrine or metabolic dysfunction.",
+        ],
+        "exclude_if": [
+            "Short stature or feeding difficulty is mentioned without endocrine focus.",
+            "Physical growth trajectory is primary, which should usually be Growth.",
+            "GI feeding/nutrition is primary, which should usually be Gastroenterology.",
+        ],
+        "strong_indicators": ["hormone", "growth hormone", "puberty", "pubertal", "metabolic", "renal", "electrolyte", "endocrine", "thyroid", "pituitary"],
+        "negative_examples": [
+            "Short stature cohort without endocrine testing -> Growth, not Endocrinology.",
+            "Feeding and reflux study -> Gastroenterology unless endocrine/metabolic dysfunction is primary.",
+        ],
+    },
+    "Gastroenterology": {
+        "include_if": [
+            "Primary objective is feeding, reflux, constipation, motility, nutrition, GI dysfunction, aspiration related to feeding, or failure to thrive as GI/nutrition issue.",
+            "Paper presents new GI phenotype or management data specific to CFC/RASopathies.",
+        ],
+        "exclude_if": [
+            "GI symptoms appear only in a phenotype list.",
+            "Endocrine/metabolic or growth hormone physiology is primary.",
+        ],
+        "strong_indicators": ["feeding", "reflux", "constipation", "motility", "gastrointestinal", "nutrition", "failure to thrive", "swallowing", "aspiration"],
+        "negative_examples": [
+            "Broad clinical features paper listing reflux -> General and Reviews unless GI is the main objective.",
+            "Growth hormone/puberty paper mentioning feeding -> Endocrinology or Growth, not Gastroenterology.",
+        ],
+    },
+    "General and Reviews": {
+        "include_if": [
+            "Article type is review, clinical guideline, diagnostic paper, CFC index, management paper, broad clinical overview, broad phenotype-spectrum paper, or patient/clinical summary.",
+            "Case report/case series has no clearly specialty-specific new finding and mainly contributes broad clinical characterization.",
+            "Adult CFC case reports, adult CFC literature reviews, or adult-with-CFC clinical summaries belong here unless the paper presents a clearly novel specialty-specific finding.",
+        ],
+        "exclude_if": [
+            "Original research has a clear specialty-specific primary outcome.",
+            "Mutation discovery/genotype-phenotype paper is primary Genetics.",
+            "Treatment landscape paper is primary Treatments.",
+            "General background appears before a more specific study objective.",
+        ],
+        "strong_indicators": ["review", "literature review", "guideline", "diagnostic criteria", "diagnosis", "index", "overview", "management", "clinical features", "phenotype spectrum", "consensus", "adult"],
+        "negative_examples": [
+            "Dermatology case series with background review -> Dermatology.",
+            "Genetic variant discovery paper with broad introduction -> Genetics.",
+            "Treatment-focused review -> Treatments, with organ system only if substantial.",
+        ],
+    },
+    "Genetics": {
+        "include_if": [
+            "Primary objective is mutation discovery, variant validation, genotype-phenotype correlation, inheritance, molecular diagnosis, or variant function.",
+            "CFC-associated BRAF, MAP2K1, MAP2K2, KRAS, or RAS/MAPK mutation biology is the central scientific question.",
+        ],
+        "exclude_if": [
+            "Genes are mentioned only as background for a specialty phenotype.",
+            "Paper is broad review/guideline rather than original genetic analysis.",
+        ],
+        "strong_indicators": ["BRAF", "MAP2K1", "MAP2K2", "KRAS", "variant", "mutation", "genotype", "phenotype correlation", "de novo", "molecular diagnosis"],
+        "negative_examples": [
+            "Dermatology study noting patients are HRAS/BRAF positive -> Dermatology if skin outcomes are primary.",
+            "Clinical management guideline mentioning genes -> General and Reviews.",
+        ],
+    },
+    "Growth": {
+        "include_if": [
+            "Primary objective is stature, linear growth, growth velocity, bone age, pubertal growth, growth hormone treatment/outcomes, or growth trajectory.",
+            "Noonan-spectrum growth study is included when it informs shared CFC/RASopathy growth mechanisms.",
+        ],
+        "exclude_if": [
+            "Short stature appears only in phenotype list.",
+            "Feeding/failure to thrive is primary GI/nutrition issue.",
+            "Endocrine physiology rather than growth trajectory is primary.",
+        ],
+        "strong_indicators": ["growth", "stature", "short stature", "linear growth", "growth velocity", "bone age", "puberty", "pubertal", "growth hormone"],
+        "negative_examples": [
+            "Broad phenotype paper listing short stature -> General and Reviews.",
+            "Feeding difficulty/failure-to-thrive study -> Gastroenterology unless growth trajectory is the main outcome.",
+        ],
+    },
+    "Gynecology": {
+        "include_if": [
+            "Primary objective is reproductive, menstrual, genital tract, ovarian/uterine, pubertal gynecologic, or reproductive endocrine phenotype.",
+            "CFC/RASopathy patient data or CFC-associated mutation model is present.",
+        ],
+        "exclude_if": [
+            "Puberty is discussed only as general growth/endocrine background.",
+            "Study is endocrine but not gynecologic/reproductive.",
+        ],
+        "strong_indicators": ["menstrual", "reproductive", "ovarian", "uterine", "gynecologic", "genital", "puberty", "pubertal development"],
+        "negative_examples": [
+            "Growth/puberty paper without gynecologic focus -> Growth or Endocrinology.",
+            "Broad review listing delayed puberty -> General and Reviews.",
+        ],
+    },
+    "Neurology": {
+        "include_if": [
+            "Primary objective is brain structure, hypotonia, motor delay, neuroimaging, neurologic physiology, cognition related to neurologic findings, or white matter/brain abnormalities.",
+            "Neurologic phenotype is the main outcome and seizure is not the primary focus.",
+        ],
+        "exclude_if": [
+            "Seizures/EEG/epilepsy are the primary outcome, which should be Seizures.",
+            "Development/behavior scales are primary without neurologic findings, which may be Development and Behavior.",
+        ],
+        "strong_indicators": ["hypotonia", "motor delay", "MRI", "neuroimaging", "brain", "white matter", "cognition", "neurologic", "coordination"],
+        "negative_examples": [
+            "EEG/seizure phenotype paper -> Seizures, not Neurology.",
+            "Behavioral assessment paper without neurologic findings -> Development and Behavior.",
+        ],
+    },
+    "Oncology": {
+        "include_if": [
+            "Primary objective is tumor development, cancer risk, malignancy surveillance, oncogenic mechanism, leukemia, melanoma, or neoplasm in CFC/RASopathy context.",
+            "CFC-associated mutation is used to model malignancy or oncogenic RAS/MAPK biology.",
+        ],
+        "exclude_if": [
+            "Somatic cancer mutation paper does not discuss CFC clinically or mechanistically.",
+            "Cancer biology mentions BRAF/MAPK but lacks CFC relevance.",
+        ],
+        "strong_indicators": ["tumor", "cancer", "neoplasm", "malignancy", "leukemia", "melanoma", "oncogenic", "surveillance"],
+        "negative_examples": [
+            "RASopathy gene mutations in melanoma without substantive CFC discussion -> Excluded.",
+            "General BRAF cancer pathway paper -> Excluded unless CFC-specific interpretation exists.",
+        ],
+    },
+    "Ophthalmology": {
+        "include_if": [
+            "Primary objective is ocular structure, vision, strabismus, nystagmus, ptosis, refractive error, optic nerve, retina, cornea, or eye development.",
+            "Paper presents ocular phenotype/outcomes in CFC/RASopathy patients or CFC mutation model.",
+        ],
+        "exclude_if": [
+            "Eye findings appear only in a phenotype list.",
+            "Broad clinical review has no new ocular finding.",
+        ],
+        "strong_indicators": ["ocular", "ophthalmology", "vision", "strabismus", "nystagmus", "ptosis", "refractive", "optic nerve", "retina", "cornea"],
+        "negative_examples": [
+            "CFC overview listing strabismus -> General and Reviews.",
+            "Genetic case report mentioning eye findings -> Genetics if variant discovery is primary.",
+        ],
+    },
+    "Orthopedic": {
+        "include_if": [
+            "Primary objective is skeletal, bone, joint, mineralization, posture, scoliosis, mobility, or musculoskeletal phenotype.",
+            "Paper presents orthopedic outcomes or mechanistic skeletal data.",
+        ],
+        "exclude_if": [
+            "Musculoskeletal findings appear only in background or broad phenotype list.",
+            "Growth/stature is primary, which should usually be Growth.",
+        ],
+        "strong_indicators": ["skeletal", "bone", "joint", "orthopedic", "scoliosis", "musculoskeletal", "bone density", "mineralization", "mobility"],
+        "negative_examples": [
+            "Short stature paper with skeletal maturation -> Growth if growth trajectory is primary.",
+            "Broad phenotype overview listing scoliosis -> General and Reviews.",
+        ],
+    },
+    "Otolaryngology": {
+        "include_if": [
+            "Primary objective is ear, nose, throat, hearing, airway, swallowing, sinus, laryngeal, craniofacial ENT, otitis, or ENT structural finding.",
+            "Paper presents ENT/hearing/airway outcomes in CFC/RASopathy patients or CFC mutation model.",
+        ],
+        "exclude_if": [
+            "ENT findings appear only in a broad phenotype list.",
+            "Respiratory/lung disease is primary, which should be Pulmonology.",
+            "Feeding/GI swallowing/nutrition is primary, which may be Gastroenterology.",
+        ],
+        "strong_indicators": ["hearing", "airway", "otitis", "laryngeal", "ENT", "otorhinolaryngologic", "swallowing", "sinus", "craniofacial"],
+        "negative_examples": [
+            "Pulmonary aspiration paper -> Pulmonology or Gastroenterology depending on primary objective.",
+            "Broad clinical review listing hearing loss -> General and Reviews.",
+        ],
+    },
+    "Pulmonology": {
+        "include_if": [
+            "Primary objective is lung disease, airway malformation, respiratory infection, aspiration, wheeze, cough, sleep-disordered breathing, or pulmonary function.",
+            "Paper presents respiratory outcomes or pulmonary management data in CFC/RASopathy patients.",
+        ],
+        "exclude_if": [
+            "Respiratory symptoms appear only in phenotype list.",
+            "ENT airway/hearing focus is primary, which should be Otolaryngology.",
+        ],
+        "strong_indicators": ["respiratory", "lung", "pulmonary", "airway", "apnea", "aspiration", "wheezing", "sleep-disordered breathing", "infection"],
+        "negative_examples": [
+            "ENT airway structural paper -> Otolaryngology.",
+            "Broad phenotype review listing respiratory infections -> General and Reviews.",
+        ],
+    },
+    "Research Studies": {
+        "include_if": [
+            "Primary objective is original experimental, translational, molecular, developmental, or model-system research that is CFC-relevant but not better captured by a specialty category.",
+            "Study uses CFC-associated RAS/MAPK mutations to investigate disease mechanism without a dominant organ-system category.",
+        ],
+        "exclude_if": [
+            "A clearer specialty category exists.",
+            "Review/guideline/overview rather than original research.",
+            "Broad pathway work lacks CFC-specific mutation/model interpretation.",
+        ],
+        "strong_indicators": ["model", "mechanism", "experimental", "translational", "RAS/MAPK", "pathophysiology", "developmental mechanism", "cellular"],
+        "negative_examples": [
+            "Original cardiac mechanism study -> Cardiology if cardiac outcome is primary.",
+            "Original genetic variant study -> Genetics.",
+        ],
+    },
+    "Seizures": {
+        "include_if": [
+            "Primary objective is epilepsy, seizure phenotype, EEG, epileptic encephalopathy, antiseizure medication, or seizure mechanism.",
+            "Paper presents seizure/EEG outcomes or seizure management in CFC/RASopathy patients or CFC mutation model.",
+        ],
+        "exclude_if": [
+            "Seizures appear only in neurologic symptom list.",
+            "Broader neuroimaging/hypotonia/cognition is primary, which should be Neurology or Development and Behavior.",
+        ],
+        "strong_indicators": ["epilepsy", "seizure", "infantile spasms", "EEG", "antiseizure medication", "epileptic encephalopathy", "status epilepticus"],
+        "negative_examples": [
+            "Neurologic phenotype paper listing seizures among many findings -> Neurology unless seizure/EEG is primary.",
+            "Broad clinical review listing epilepsy -> General and Reviews.",
+        ],
+    },
+    "Treatments": {
+        "include_if": [
+            "Primary objective is therapy, intervention, medication, surgery, treatment response, treatment strategy, therapeutic landscape, targeted RAS/MAPK intervention, or multidisciplinary management strategy.",
+            "Article evaluates or reviews treatment options as its central purpose.",
+        ],
+        "exclude_if": [
+            "Treatment is mentioned only in discussion, follow-up, supportive care, or background.",
+            "Original specialty phenotype/genotype paper only briefly mentions management.",
+            "General clinical overview is broad rather than treatment-focused.",
+        ],
+        "strong_indicators": ["treatment", "therapy", "therapeutic", "intervention", "medication", "surgery", "MEK inhibitor", "management strategy", "treatment response", "therapeutic landscape"],
+        "negative_examples": [
+            "Cardiac cohort mentioning management in discussion -> Cardiology.",
+            "Broad CFC clinical guideline covering many topics -> General and Reviews unless treatment is the main objective.",
+        ],
+    },
+}
+
+ARTICLE_TYPES = [
+    "Original research",
+    "Case report",
+    "Case series",
+    "Review",
+    "Clinical guideline",
+    "Diagnostic paper",
+    "Management paper",
+]
+
+CATEGORY_PRIORITY_RULES = [
+    "If seizure/epilepsy/EEG is the primary outcome, choose Seizures rather than Neurology.",
+    "If mutation discovery, variant validation, or genotype-phenotype correlation is the primary objective, choose Genetics even if organ findings are described.",
+    "If therapeutic intervention or therapeutic landscape is the primary objective, choose Treatments; add an organ-system category only when at least about 30% of the paper focuses on that organ system.",
+    "If the article is a review, clinical guideline, diagnostic paper, management paper, or broad clinical overview, choose General and Reviews unless it presents substantial new specialty-specific findings.",
+    "If the article is an adult CFC case report, adult-with-CFC clinical summary, or adult CFC literature review, choose General and Reviews unless it presents a clearly novel specialty-specific finding.",
+    "If skin/hair/nail findings are the primary objective, choose Dermatology even when CFC genetics are mentioned.",
+    "If cardiac disease/function/imaging is the primary objective, choose Cardiology unless the article is primarily a broad review/guideline.",
+    "If growth trajectory, stature, bone age, or pubertal growth is the primary objective, choose Growth; if endocrine physiology is primary, choose Endocrinology.",
+    "If no specialty category clearly dominates original CFC-relevant mechanistic research, choose Research Studies.",
+]
+
 
 SECTION_ALIASES = {
     "ENT": "Otolaryngology",
@@ -313,7 +682,7 @@ REVIEW_COMPARISON_EXPORT_COLUMNS = [
     ("Human_OpenAI_Match", "Match?"),
     ("OpenAI_Screening_Display", "OpenAI Screening In or Out"),
     ("Zotero_Category_Display", "If in Zotero - Category"),
-    ("OpenAI_Primary_Category", "OpenAI Assigned Category"),
+    ("OpenAI_Assigned_Category_Display", "OpenAI Assigned Category"),
 ]
 
 
@@ -354,7 +723,7 @@ def normalize_pmid(value: object) -> str:
 def normalize_doi(value: object) -> str:
     if value is None:
         return ""
-    text = str(value).strip().lower()
+    text = str(value).strip().lower().replace("_", " ")
     text = re.sub(r"^https?://(?:dx\.)?doi\.org/", "", text)
     text = re.sub(r"^doi:\s*", "", text)
     return text.strip().rstrip(".")
@@ -387,6 +756,56 @@ def screening_direction(value: object) -> str:
     if any(term in text for term in screen_in_terms):
         return "in"
     return ""
+
+
+def split_category_labels(value: object) -> set[str]:
+    if value is None or pd.isna(value):
+        return set()
+    text = str(value).strip().lower()
+    if not text:
+        return set()
+    protected = {
+        "allergy and immunology": "allergy_immunology",
+        "development and behavior": "development_behavior",
+        "general and reviews": "general_reviews",
+    }
+    for phrase, token in protected.items():
+        text = text.replace(phrase, token)
+    text = re.sub(r"\badditional\s*:\s*", ";", text)
+    text = text.replace("&", ";")
+    text = re.sub(r"\band\b", ";", text)
+    text = text.replace(",", ";").replace("/", ";").replace("|", ";")
+    for phrase, token in protected.items():
+        text = text.replace(token, phrase)
+    parts = [re.sub(r"\s+", " ", part).strip(" .;:?") for part in text.split(";")]
+    categories: set[str] = set()
+    for part in parts:
+        if not part:
+            continue
+        if part in CATEGORY_ALIASES:
+            categories.add(CATEGORY_ALIASES[part])
+            continue
+        for alias, category in CATEGORY_ALIASES.items():
+            if re.search(rf"\b{re.escape(alias)}\b", part):
+                categories.add(category)
+    return categories
+
+
+def comparison_category_text(primary: object, secondary: object = "") -> str:
+    categories = split_category_labels(primary)
+    categories.update(split_category_labels(secondary))
+    ordered = [
+        category
+        for category in SECTIONS
+        if category in categories and category not in EXCLUDED_COMPARISON_FOLDERS
+    ]
+    if not ordered:
+        return ""
+    primary_category = ordered[0]
+    additional = [category for category in ordered[1:] if category != primary_category]
+    if additional:
+        return f"{primary_category}; Additional: {additional[0]}"
+    return primary_category
 
 
 def require_env(name: str) -> str:
@@ -558,6 +977,50 @@ def fetch_zotero_index(group_id: str, api_key: str) -> dict[str, dict[str, dict[
     return index
 
 
+def build_zotero_assignment_examples(group_id: str, api_key: str) -> str:
+    zot = zotero.Zotero(group_id, "group", api_key)
+    collections = {collection["key"]: collection["data"].get("name", "") for collection in zot.everything(zot.collections())}
+    items = zot.everything(zot.items())
+    examples: dict[str, list[str]] = {}
+
+    for item in items:
+        data = item.get("data", {})
+        if data.get("itemType") in {"attachment", "note", "annotation"}:
+            continue
+        title = re.sub(r"\s+", " ", str(data.get("title", "") or "")).strip()
+        if not title:
+            continue
+        abstract = re.sub(r"\s+", " ", str(data.get("abstractNote", "") or "")).strip()
+        collection_names = [collections.get(key, key) for key in data.get("collections", [])]
+        category_labels: set[str] = set()
+        for collection_name in collection_names:
+            category_labels.update(split_category_labels(collection_name))
+        if not category_labels:
+            continue
+
+        for category in sorted(category_labels):
+            examples.setdefault(category, [])
+            if len(examples[category]) >= MAX_ZOTERO_EXAMPLES_PER_CATEGORY:
+                continue
+            example_text = f"- {title}"
+            if abstract:
+                example_text += f" | Abstract clue: {abstract[:450]}"
+            examples[category].append(example_text)
+
+    lines = [
+        "Use these existing Zotero folder assignments as examples of Lexi/Rich's categorization style.",
+        "These examples are guidance, not automatic truth: still apply the inclusion/exclusion criteria and full-text evidence.",
+        "If an example is in Excluded, learn the screen-out pattern rather than treating Excluded as a clinical category.",
+    ]
+    for category in list(SECTIONS) + ["Excluded"]:
+        category_examples = examples.get(category, [])
+        if not category_examples:
+            continue
+        lines.append(f"\n{category} examples:")
+        lines.extend(category_examples)
+    return "\n".join(lines)
+
+
 def lookup_zotero_match(
     pmid: str,
     title: str,
@@ -573,6 +1036,78 @@ def lookup_zotero_match(
     if normalized_title and normalized_title in zotero_index.get("title", {}):
         return zotero_index["title"][normalized_title]
     return None
+
+
+def zotero_api_get_json(url: str, api_key: str) -> dict | list:
+    request = Request(
+        url,
+        headers={"Zotero-API-Key": api_key, "Accept": "application/json"},
+    )
+    try:
+        with urlopen(request, timeout=30) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return {}
+
+
+def zotero_fulltext_for_item(group_id: str, api_key: str, item_key: str) -> tuple[str, str]:
+    if not item_key:
+        return "", ""
+
+    encoded_key = quote(item_key)
+    base = f"https://api.zotero.org/groups/{group_id}/items/{encoded_key}"
+    texts = []
+    sources = []
+
+    item_fulltext = zotero_api_get_json(f"{base}/fulltext", api_key)
+    if isinstance(item_fulltext, dict) and item_fulltext.get("content"):
+        texts.append(str(item_fulltext.get("content", "")))
+        sources.append("item")
+
+    children = zotero_api_get_json(f"{base}/children?limit=100", api_key)
+    if isinstance(children, list):
+        for child in children:
+            child_data = child.get("data", {})
+            if child_data.get("itemType") != "attachment":
+                continue
+            child_key = child.get("key") or child_data.get("key")
+            if not child_key:
+                continue
+            attachment_fulltext = zotero_api_get_json(
+                f"https://api.zotero.org/groups/{group_id}/items/{quote(child_key)}/fulltext",
+                api_key,
+            )
+            if isinstance(attachment_fulltext, dict) and attachment_fulltext.get("content"):
+                texts.append(str(attachment_fulltext.get("content", "")))
+                sources.append(f"attachment:{child_key}")
+
+    combined = "\n\n".join(texts)
+    combined = re.sub(r"\s+", " ", combined).strip()
+    return combined, "; ".join(sources)
+
+
+def add_zotero_fulltext_columns(df: DataFrame, group_id: str, api_key: str) -> DataFrame:
+    output = df.copy()
+    output["Zotero_Full_Text_Found"] = "No"
+    output["Zotero_Full_Text_Source"] = ""
+    output["Zotero_Full_Text"] = ""
+
+    if output.empty or "Zotero_Item_Key" not in output:
+        return output
+
+    for idx, row in output.iterrows():
+        if str(row.get("Zotero_Found", "")).strip() != "Yes":
+            continue
+        item_key = str(row.get("Zotero_Item_Key", "") or "").strip()
+        if not item_key:
+            continue
+        full_text, source = zotero_fulltext_for_item(group_id, api_key, item_key)
+        time.sleep(0.25)
+        if full_text:
+            output.at[idx, "Zotero_Full_Text_Found"] = "Yes"
+            output.at[idx, "Zotero_Full_Text_Source"] = source
+            output.at[idx, "Zotero_Full_Text"] = full_text
+    return output
 
 
 def publication_date_filter(from_year: int | None, to_year: int | None) -> tuple[str | None, str | None]:
@@ -610,9 +1145,27 @@ def search_pubmed(query: str, retmax: int, from_year: int | None, to_year: int |
     }
     if mindate and maxdate:
         search_kwargs.update({"datetype": "pdat", "mindate": mindate, "maxdate": maxdate})
-    handle = Entrez.esearch(**search_kwargs)
-    record = Entrez.read(handle)
+    record = entrez_call_with_retry(lambda: Entrez.read(Entrez.esearch(**search_kwargs)), "PubMed search")
     return [str(pmid) for pmid in record.get("IdList", [])]
+
+
+def entrez_call_with_retry(operation, label: str, attempts: int = 5):
+    for attempt in range(1, attempts + 1):
+        try:
+            return operation()
+        except HTTPError as exc:
+            retryable = exc.code in {429, 500, 502, 503, 504}
+            if not retryable or attempt == attempts:
+                raise
+            wait_seconds = min(60, 8 * attempt)
+            print(f"{label} was rate-limited by PubMed. Waiting {wait_seconds} seconds, then retrying...")
+            time.sleep(wait_seconds)
+        except URLError:
+            if attempt == attempts:
+                raise
+            wait_seconds = min(60, 5 * attempt)
+            print(f"{label} had a temporary network problem. Waiting {wait_seconds} seconds, then retrying...")
+            time.sleep(wait_seconds)
 
 
 def chunks(values: list[str], size: int) -> Iterable[list[str]]:
@@ -623,8 +1176,10 @@ def chunks(values: list[str], size: int) -> Iterable[list[str]]:
 def fetch_pubmed_records(pmids: list[str], batch_size: int = 200) -> list[dict]:
     records: list[dict] = []
     for batch in chunks(pmids, batch_size):
-        handle = Entrez.efetch(db="pubmed", id=",".join(batch), retmode="xml")
-        data = Entrez.read(handle)
+        data = entrez_call_with_retry(
+            lambda: Entrez.read(Entrez.efetch(db="pubmed", id=",".join(batch), retmode="xml")),
+            "PubMed record fetch",
+        )
         records.extend(data.get("PubmedArticle", []))
     return records
 
@@ -803,9 +1358,45 @@ def openai_review_categories_payload() -> list[dict[str, str]]:
             "description": section.description,
             "inclusion": section.inclusion,
             "exclusion": section.exclusion,
+            "include_if": CATEGORY_CLASSIFICATION_GUIDANCE.get(section.name, {}).get("include_if", []),
+            "exclude_if": CATEGORY_CLASSIFICATION_GUIDANCE.get(section.name, {}).get("exclude_if", []),
+            "strong_indicators": CATEGORY_CLASSIFICATION_GUIDANCE.get(section.name, {}).get("strong_indicators", []),
+            "negative_examples": CATEGORY_CLASSIFICATION_GUIDANCE.get(section.name, {}).get("negative_examples", []),
         }
         for section in SECTIONS.values()
+        if section.name not in EXCLUDED_COMPARISON_FOLDERS
     ]
+
+
+def category_names_for_openai() -> list[str]:
+    return [section.name for section in SECTIONS.values() if section.name not in EXCLUDED_COMPARISON_FOLDERS]
+
+
+def normalize_openai_decision(value: object) -> str:
+    text = str(value or "").strip().lower()
+    if text in {"included", "include", "relevant", "screen in", "screened in"}:
+        return "Included"
+    if text in {"excluded", "exclude", "not relevant", "screen out", "screened out"}:
+        return "Excluded"
+    return "Needs review"
+
+
+def normalize_openai_confidence(value: object) -> str:
+    text = str(value or "").strip().lower()
+    if text in {"high", "medium", "low"}:
+        return text.capitalize()
+    if text == "moderate":
+        return "Medium"
+    return "Medium"
+
+
+def normalize_openai_category(value: object) -> str:
+    labels = split_category_labels(value)
+    for category in category_names_for_openai():
+        if category in labels:
+            return category
+    text = str(value or "").strip()
+    return text if text in category_names_for_openai() else ""
 
 
 def parse_json_response(text: str) -> dict:
@@ -823,7 +1414,7 @@ def parse_json_response(text: str) -> dict:
         raise
 
 
-def add_openai_review_columns(df: DataFrame, batch_size: int = 5) -> DataFrame:
+def add_openai_review_columns(df: DataFrame, batch_size: int = 5, zotero_examples_text: str = "") -> DataFrame:
     if df.empty:
         return df
     api_key = os.getenv("OPENAI_API_KEY")
@@ -833,12 +1424,14 @@ def add_openai_review_columns(df: DataFrame, batch_size: int = 5) -> DataFrame:
     from openai import OpenAI
 
     client = OpenAI(api_key=api_key)
-    model_name = os.getenv("OPENAI_CATEGORY_MODEL", "gpt-4.1-mini")
+    model_name = os.getenv("OPENAI_CATEGORY_MODEL", "gpt-5.4-mini")
     output = df.copy()
     for column in [
         "OpenAI_Relevance_Decision",
         "OpenAI_Primary_Category",
         "OpenAI_Secondary_Categories",
+        "OpenAI_Article_Type",
+        "OpenAI_Primary_Objective",
         "OpenAI_Rationale",
         "OpenAI_Confidence",
     ]:
@@ -849,12 +1442,36 @@ def add_openai_review_columns(df: DataFrame, batch_size: int = 5) -> DataFrame:
         batch = output.iloc[start : start + batch_size]
         articles = []
         for idx, row in batch.iterrows():
+            zotero_full_text = str(row.get("Zotero_Full_Text", "") or "")
+            metadata_text = ". ".join(
+                part
+                for part in [
+                    str(row.get("Title", "") or ""),
+                    str(row.get("Abstract", "") or ""),
+                    str(row.get("Journal", "") or ""),
+                    str(row.get("DOI", "") or ""),
+                ]
+                if part
+            )
+            evidence_text = "\n\n".join(
+                part
+                for part in [
+                    metadata_text,
+                    f"ZOTERO INDEXED FULL TEXT:\n{zotero_full_text[:18000]}" if zotero_full_text else "",
+                ]
+                if part
+            )[:20000]
             articles.append(
                 {
                     "row_index": int(idx),
                     "pmid": str(row.get("PMID", "")),
                     "title": str(row.get("Title", "")),
                     "abstract": str(row.get("Abstract", ""))[:3000],
+                    "year": str(row.get("Publication_Year", "")),
+                    "doi": str(row.get("DOI", "")),
+                    "zotero_full_text_found": str(row.get("Zotero_Full_Text_Found", "")),
+                    "zotero_full_text_source": str(row.get("Zotero_Full_Text_Source", "")),
+                    "article_text": evidence_text,
                     "deep_learning_top_category": str(row.get("Deep_Learning_Top_Category", "")),
                     "deep_learning_suggested_categories": str(row.get("Deep_Learning_Suggested_Categories", "")),
                     "google_sheets_found": str(row.get("Google_Sheets_Found", "")),
@@ -866,14 +1483,89 @@ def add_openai_review_columns(df: DataFrame, batch_size: int = 5) -> DataFrame:
 
         prompt = textwrap.dedent(
             f"""
-            Review each PubMed article for a CFC syndrome literature review.
+            Classify each article for a CFC syndrome research library.
 
-            Decide relevance using only these values:
-            Relevant, Possibly relevant, Not relevant
+            Use the available Zotero indexed full text when present. If full text is not present,
+            use title, abstract, journal, and metadata.
 
-            Then assign categories only for articles that are Relevant or Possibly relevant.
-            Use the category definitions and criteria below:
+            Think like an experienced human curator. Do not immediately assign a category.
+            Follow this hierarchical decision process for every article:
+
+            Step 1: Determine whether the article contains substantial CFC-specific evidence.
+            If no, set decision to "Excluded" and leave ai_category blank.
+            If yes, continue.
+
+            Step 2: Determine article_type using only one of:
+            {json.dumps(ARTICLE_TYPES)}
+
+            Step 3: Identify the SINGLE primary scientific objective.
+            The primary objective is the hypothesis, primary research question, or main outcome measured.
+            It is not every phenotype mentioned.
+
+            Step 4: Compare only the plausible categories suggested by the article text, PubMed query matches,
+            deep-learning suggestions, category guidance, and human Zotero examples.
+            Do not score every category.
+
+            Step 5: Assign exactly one primary category.
+
+            Step 6: Assign one additional category only if a second specialty accounts for about 30% or more of the paper
+            or the paper has two equally important scientific objectives. Do not add categories for phenotype mentions.
+
+            Confidence scoring:
+            - High: primary objective is obvious and one category clearly scores highest.
+            - Medium: some category overlap exists, but one category is still best.
+            - Low: paper could reasonably fit multiple categories or evidence is limited.
+            Low-confidence non-excluded papers must use decision "Needs review".
+
+            Output rules:
+            - Exclude articles that are clearly not related to CFC, CFC-associated RAS/MAPK biology, or clinically relevant RASopathy comparison.
+            - Exclude Noonan-only, Costello-only, Legius-only, NF1-only, cancer-only, somatic mutation-only, or broad pathway papers when they do not provide CFC data, a CFC-associated mutation/model, a shared RASopathy mechanism, or useful clinical comparison for CFC.
+            - Inspect the supplied full text when available. If CFC is only barely mentioned, appears only in a passing disease list, appears only in a figure/table label, appears only in references, or is not substantively discussed in the aims/results/discussion, set decision to "Excluded".
+            - If the article is clearly about another condition and only mentions RAS/MAPK, BRAF, MAP2K1, MAP2K2, KRAS, or RASopathy in passing, set decision to "Excluded".
+            - If CFC relevance is uncertain but plausible, set decision to "Needs review" and assign the best tentative category so Lexi can check it.
+            - If an article is about Noonan syndrome, Costello syndrome, Legius syndrome, NF1, or general RASopathies but may provide useful comparison, shared mechanism, Noonan-spectrum context, or CFC-relevant mutation/model information, use "Needs review" rather than excluding it.
+            - Do not exclude CFC-specific clinical guidelines, diagnostic criteria papers, CFC index papers, prenatal diagnosis overviews, or CFC-focused management papers just because they are not original research. Classify these as "General and Reviews".
+            - If a RASopathy-wide review or overview meaningfully discusses CFC, compares CFC with other RASopathies, or provides useful CFC clinical/genetic/management context, classify it as "General and Reviews" instead of excluding it.
+            - If the article is a review, broad overview, clinical guideline, consensus statement, diagnostic summary, educational summary, or case report/case series that does not present a new mutation, new disease mechanism, new experimental result, new genotype-phenotype analysis, or previously undescribed clinical manifestation, classify it as "General and Reviews".
+            - If the article is about an adult with CFC and is mainly a case report, clinical summary, or literature review, classify it as "General and Reviews" unless it presents a clearly novel specialty-specific finding.
+            - If a review mainly addresses treatment options or therapeutic landscape, prefer "Treatments" as the primary category and add the organ system as an additional category when appropriate.
+            - Human review examples to follow: CFC clinical management guidelines, CFC index/diagnostic criteria papers, prenatal diagnosis overviews with meaningful CFC discussion, and RASopathy reviews with substantive CFC comparison belong in "General and Reviews"; autoimmune or other RASopathy cohorts with actual CFC participants can belong in the relevant specialty; papers that only allude to CFC in one figure/table/reference should be excluded.
+            - Use a specialty category only when the article contributes new original evidence or a clearly specialty-specific clinical finding for that folder.
+            - Do not assign specialty folders to review articles merely because the review mentions that organ system.
+            - Choose exactly one primary category. The primary category should reflect the article's main purpose, not every phenotype mentioned.
+            - Secondary categories should be rare. Add at most one additional category unless the article has two clearly separate main objectives.
+            - Do not add "General and Reviews" as an additional category to original research, case reports with a clear specialty finding, genotype/variant papers, or organ-system studies just because they contain background.
+            - Use "General and Reviews" as primary only when the article is mainly a review, guideline, diagnostic/index paper, broad phenotype overview, or management/background paper.
+            - If a paper is broad CFC clinical characterization, diagnosis, management guidance, or patient education, prefer "General and Reviews" unless there is a clearly novel specialty finding.
+            - If a paper primarily identifies or validates a CFC pathogenic variant, genotype-phenotype relationship, inheritance pattern, or variant function for clinical genetics, prefer "Genetics" even if it also describes clinical features.
+            - If a paper primarily studies hypertrophic cardiomyopathy, heart function, MEK inhibition for cardiac disease, arrhythmia, or cardiac surveillance, prefer "Cardiology".
+            - If a paper is primarily epilepsy, EEG, seizure phenotype, or seizure treatment, prefer "Seizures" rather than Neurology.
+            - If a paper is primarily broader motor milestones, behavior, cognition, motor function, hypotonia, or neuroimaging without seizure focus, prefer "Neurology" or "Development and Behavior" based on the main outcome.
+            - If a paper mainly describes skin, hair, nail, eczema, keratosis, or other cutaneous findings, prefer "Dermatology" even if CFC genetics are mentioned.
+            - If zotero_current_category is Exclusion or Excluded, treat that as prior human screen-out context, not as a clinical category. Judge the article independently, but do not assign Exclusion as a category.
+            - If excluded, leave ai_category blank and explain the specific exclusion reason.
+            - If decision is "Needs review", still provide the best tentative ai_category.
+            - If included, choose one primary category in ai_category.
+            - If the article clearly belongs in more than one category, mention additional categories in additional_categories.
+            - Do not add multiple categories just because the article mentions multiple symptoms; only add them when the article substantially belongs in those sections.
+            - Do not use Historical Articles or Conferences.
+
+            Category priority rules:
+            {json.dumps(CATEGORY_PRIORITY_RULES, indent=2)}
+
+            Existing human Zotero categorization examples:
+            {zotero_examples_text or "No Zotero examples were available for this run."}
+
+            New inclusion/exclusion criteria and category definitions:
             {json.dumps(categories, indent=2)}
+
+            Human-corrected examples to follow:
+            - "Clinical analysis of a child with cardio-facio-cutaneous syndrome due to a de novo variant of MAP2K1 gene" -> Included, Genetics, no additional category.
+            - "Cardio-facio-cutaneous syndrome: clinical features, diagnosis, and management guidelines" -> Included, General and Reviews.
+            - "CFC index for the diagnosis of cardiofaciocutaneous syndrome" -> Included, General and Reviews.
+            - "An Assessment of the Therapeutic Landscape for the Treatment of Heart Disease in the RASopathies" -> Included or Needs review, Treatments; Additional: Cardiology.
+            - "Autoimmune disease and multiple autoantibodies in 42 patients with RASopathies" -> Included or Needs review if CFC participants are included, Allergy and Immunology.
+            - "RASopathy Gene Mutations in Melanoma" -> Excluded when CFC is not substantively discussed.
 
             Articles:
             {json.dumps(articles, indent=2)}
@@ -883,17 +1575,18 @@ def add_openai_review_columns(df: DataFrame, batch_size: int = 5) -> DataFrame:
               "articles": [
                 {{
                   "row_index": 0,
-                  "relevance": "Relevant",
-                  "primary_category": "Genetics",
-                  "secondary_categories": ["General and Reviews"],
+                  "decision": "Included",
+                  "article_type": "Original research",
+                  "primary_objective": "Primary objective based on title/abstract/full text.",
+                  "ai_category": "Cardiology",
+                  "additional_categories": ["Genetics"],
                   "confidence": "High",
-                  "rationale": "Brief rationale."
+                  "reasoning": "Evidence-based rationale explaining why the primary category was chosen using title/abstract/full-text evidence."
                 }}
               ]
             }}
 
-            If an article is not related to CFC, CFC-associated RAS/MAPK mechanisms, or a RASopathy comparison that informs CFC, mark it Not relevant.
-            Do not mark articles Not relevant merely because they were found in Google Sheets.
+            Reasoning must explain why the primary category was chosen, not merely list topics.
             """
         ).strip()
 
@@ -907,6 +1600,8 @@ def add_openai_review_columns(df: DataFrame, batch_size: int = 5) -> DataFrame:
                 output.at[idx, "OpenAI_Relevance_Decision"] = "Possibly relevant"
                 output.at[idx, "OpenAI_Primary_Category"] = str(row.get("Deep_Learning_Top_Category", ""))
                 output.at[idx, "OpenAI_Secondary_Categories"] = str(row.get("Deep_Learning_Suggested_Categories", ""))
+                output.at[idx, "OpenAI_Article_Type"] = ""
+                output.at[idx, "OpenAI_Primary_Objective"] = ""
                 output.at[idx, "OpenAI_Confidence"] = "Low"
                 output.at[idx, "OpenAI_Rationale"] = f"OpenAI review failed for this batch; fallback used deep learning. Error: {type(exc).__name__}"
 
@@ -914,16 +1609,40 @@ def add_openai_review_columns(df: DataFrame, batch_size: int = 5) -> DataFrame:
             row_index = item.get("row_index")
             if row_index not in output.index:
                 continue
-            secondary = item.get("secondary_categories", [])
-            if isinstance(secondary, list):
-                secondary_text = ", ".join(str(value) for value in secondary)
+            decision = normalize_openai_decision(item.get("decision"))
+            confidence = normalize_openai_confidence(item.get("confidence"))
+            if confidence == "Low" and decision != "Excluded":
+                decision = "Needs review"
+            if decision == "Included":
+                relevance = "Relevant"
+            elif decision == "Excluded":
+                relevance = "Not relevant"
             else:
-                secondary_text = str(secondary or "")
-            output.at[row_index, "OpenAI_Relevance_Decision"] = str(item.get("relevance", "")).strip()
-            output.at[row_index, "OpenAI_Primary_Category"] = str(item.get("primary_category", "")).strip()
+                relevance = "Possibly relevant"
+            primary = normalize_openai_category(item.get("ai_category"))
+            if relevance == "Not relevant" or primary in EXCLUDED_COMPARISON_FOLDERS or primary not in SECTIONS:
+                primary = ""
+            secondary = item.get("additional_categories", [])
+            if isinstance(secondary, list):
+                secondary_values = []
+                for value in secondary:
+                    category = normalize_openai_category(value)
+                    if not category or category == primary:
+                        continue
+                    if category == "General and Reviews" and primary != "General and Reviews":
+                        continue
+                    if category in category_names_for_openai() and category not in secondary_values:
+                        secondary_values.append(category)
+                secondary_text = ", ".join(secondary_values[:1])
+            else:
+                secondary_text = ""
+            output.at[row_index, "OpenAI_Relevance_Decision"] = relevance
+            output.at[row_index, "OpenAI_Primary_Category"] = primary
             output.at[row_index, "OpenAI_Secondary_Categories"] = secondary_text
-            output.at[row_index, "OpenAI_Confidence"] = str(item.get("confidence", "")).strip()
-            output.at[row_index, "OpenAI_Rationale"] = str(item.get("rationale", "")).strip()
+            output.at[row_index, "OpenAI_Article_Type"] = str(item.get("article_type", "") or "").strip()
+            output.at[row_index, "OpenAI_Primary_Objective"] = str(item.get("primary_objective", "") or "").strip()
+            output.at[row_index, "OpenAI_Confidence"] = confidence
+            output.at[row_index, "OpenAI_Rationale"] = str(item.get("reasoning", "") or item.get("rationale", "") or "").strip()
     return output
 
 
@@ -1079,6 +1798,22 @@ def review_comparison_export_frame(report: DataFrame) -> DataFrame:
     blank = pd.Series([""] * len(export), index=export.index)
     google_decision = export["Google_Sheets_Decision"] if "Google_Sheets_Decision" in export else blank
     google_screen = google_decision.fillna("").map(screening_direction)
+    zotero_found = export["Zotero_Found"].fillna("") if "Zotero_Found" in export else blank
+    zotero_category = export["Zotero_Current_Category"].fillna("") if "Zotero_Current_Category" in export else blank
+    zotero_screen = zotero_category.map(
+        lambda value: (
+            "out"
+            if "Excluded" in split_category_labels(value)
+            else (
+                "in"
+                if str(value or "").strip()
+                and str(value or "").strip() not in {"not in Zotero", "unfiled"}
+                and bool(split_category_labels(value))
+                else ""
+            )
+        )
+    ).where(zotero_found.eq("Yes"), "")
+    human_screen = google_screen.where(google_screen.ne(""), zotero_screen)
     if "OpenAI_Relevance_Decision" in export:
         openai_relevance = export["OpenAI_Relevance_Decision"].fillna("")
     elif "System_Relevance_Decision" in export:
@@ -1088,7 +1823,7 @@ def review_comparison_export_frame(report: DataFrame) -> DataFrame:
     openai_screen = openai_relevance.map(screening_direction)
     export["Human_OpenAI_Match"] = [
         "Yes" if human and ai and human == ai else ("No" if human and ai else "")
-        for human, ai in zip(google_screen, openai_screen)
+        for human, ai in zip(human_screen, openai_screen)
     ]
     export["OpenAI_Screening_Display"] = openai_relevance.map(
         {
@@ -1097,9 +1832,13 @@ def review_comparison_export_frame(report: DataFrame) -> DataFrame:
             "Not relevant": "Screen out",
         }
     ).fillna(openai_relevance)
-    zotero_found = export["Zotero_Found"].fillna("") if "Zotero_Found" in export else blank
-    zotero_category = export["Zotero_Current_Category"].fillna("") if "Zotero_Current_Category" in export else blank
     export["Zotero_Category_Display"] = zotero_category.where(zotero_found.eq("Yes"), "")
+    openai_primary = export["OpenAI_Primary_Category"].fillna("") if "OpenAI_Primary_Category" in export else blank
+    openai_secondary = export["OpenAI_Secondary_Categories"].fillna("") if "OpenAI_Secondary_Categories" in export else blank
+    export["OpenAI_Assigned_Category_Display"] = [
+        "" if str(relevance).strip() == "Not relevant" else comparison_category_text(primary, secondary)
+        for relevance, primary, secondary in zip(openai_relevance, openai_primary, openai_secondary)
+    ]
     for source_column, _ in REVIEW_COMPARISON_EXPORT_COLUMNS:
         if source_column not in export:
             export[source_column] = ""
@@ -1240,17 +1979,23 @@ def apply_review_comparison_formatting(path: Path) -> None:
 def run_review_comparison(args: argparse.Namespace) -> None:
     from_year, to_year = REVIEW_COMPARISON_YEARS
     Entrez.email = require_env("ENTREZ_EMAIL")
+    Entrez.api_key = os.getenv("NCBI_API_KEY") or None
     require_env("OPENAI_API_KEY")
 
     screening_history = load_screening_history(args.screening_history)
     zotero_index = {}
+    zotero_examples_text = ""
     if not args.skip_zotero:
-        zotero_index = fetch_zotero_index(require_env("ZOTERO_GROUP_ID"), require_env("ZOTERO_API_KEY"))
+        zotero_group_id = require_env("ZOTERO_GROUP_ID")
+        zotero_api_key = require_env("ZOTERO_API_KEY")
+        zotero_index = fetch_zotero_index(zotero_group_id, zotero_api_key)
+        zotero_examples_text = build_zotero_assignment_examples(zotero_group_id, zotero_api_key)
 
     pmid_categories: dict[str, list[str]] = {}
     section_counts: list[dict[str, object]] = []
     for section in SECTIONS.values():
         section_pmids = search_pubmed(section.query, args.retmax, from_year, to_year)
+        time.sleep(0.4)
         section_counts.append({"Section": section.name, "PubMed_Records_Found": len(section_pmids)})
         for pmid in section_pmids:
             pmid_categories.setdefault(pmid, [])
@@ -1261,8 +2006,14 @@ def run_review_comparison(args: argparse.Namespace) -> None:
     records = fetch_pubmed_records(pubmed_pmids) if pubmed_pmids else []
     report = build_review_comparison_rows(records, pmid_categories, zotero_index, screening_history)
     report = filter_report_year_range(report, from_year, to_year)
+    if not args.skip_zotero:
+        report = add_zotero_fulltext_columns(
+            report,
+            zotero_group_id,
+            zotero_api_key,
+        )
     report = add_deep_learning_review_columns(report, args.embedding_model, max(args.suggested_labels, 3))
-    report = add_openai_review_columns(report, args.openai_review_batch_size)
+    report = add_openai_review_columns(report, args.openai_review_batch_size, zotero_examples_text)
     report = finalize_review_comparison_decisions(report)
 
     deep_research_prompt = build_review_deep_research_prompt(report)
@@ -1270,10 +2021,13 @@ def run_review_comparison(args: argparse.Namespace) -> None:
     log_rows = [
         {"Field": "Mode", "Value": "2017-2022 review comparison"},
         {"Field": "Publication date filter", "Value": format_year_filter(from_year, to_year)},
+        {"Field": "OpenAI category model", "Value": os.getenv("OPENAI_CATEGORY_MODEL", "gpt-5.4-mini")},
         {"Field": "Unique PubMed records found", "Value": len(pubmed_pmids)},
         {"Field": "Rows in report", "Value": len(report)},
         {"Field": "Google Sheets matches", "Value": int((report.get("Google_Sheets_Found") == "Yes").sum()) if not report.empty else 0},
         {"Field": "Zotero matches", "Value": int((report.get("Zotero_Found") == "Yes").sum()) if not report.empty else 0},
+        {"Field": "Zotero full text matches", "Value": int((report.get("Zotero_Full_Text_Found") == "Yes").sum()) if "Zotero_Full_Text_Found" in report else 0},
+        {"Field": "Zotero categorization examples used", "Value": "Yes" if zotero_examples_text else "No"},
         {"Field": "Generated", "Value": time.ctime()},
     ]
     for item in section_counts:
@@ -1290,6 +2044,8 @@ def run_review_comparison(args: argparse.Namespace) -> None:
     print(f"Rows written: {len(report)}")
     print(f"Google Sheets matches: {int((report.get('Google_Sheets_Found') == 'Yes').sum()) if not report.empty else 0}")
     print(f"Zotero matches: {int((report.get('Zotero_Found') == 'Yes').sum()) if not report.empty else 0}")
+    if "Zotero_Full_Text_Found" in report:
+        print(f"Zotero full text matches: {int((report.get('Zotero_Full_Text_Found') == 'Yes').sum())}")
     if openai_run:
         print(f"OpenAI deep research submitted: {openai_run.get('response_id', '')} ({openai_run.get('status', '')})")
     print(f"Workbook written: {output_path.resolve()}")
@@ -1646,7 +2402,7 @@ def main() -> None:
     load_runtime_dependencies()
     if args.review_comparison_2017_2022:
         if args.output == "reports/CFC_Master_Review_Report.xlsx":
-            args.output = "reports/CFC_2017_2022_Review_Comparison.xlsx"
+            args.output = "reports/CFC_2017_2022_Review_Comparison_Human_Aligned.xlsx"
         run_review_comparison(args)
         return
 
@@ -1661,6 +2417,7 @@ def main() -> None:
     section = None if run_all_categories else SECTIONS[category]
     sections_to_run = list(SECTIONS.values()) if run_all_categories else [section]
     Entrez.email = require_env("ENTREZ_EMAIL")
+    Entrez.api_key = os.getenv("NCBI_API_KEY") or None
     if not args.skip_openai_deep_research:
         require_env("OPENAI_API_KEY")
     output_path = Path(args.output)
