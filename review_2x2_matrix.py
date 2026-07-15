@@ -52,8 +52,6 @@ CATEGORIES = [
     "Research Studies",
     "Seizures",
     "Treatments",
-    "Historical Articles",
-    "Conferences",
 ]
 
 CATEGORY_COLORS = {
@@ -98,7 +96,7 @@ def normalize_pmid(value: object) -> str:
 def normalize_doi(value: object) -> str:
     if value is None:
         return ""
-    text = str(value).strip().lower()
+    text = str(value).strip().lower().replace("_", " ")
     text = re.sub(r"^https?://(?:dx\.)?doi\.org/", "", text)
     text = re.sub(r"^doi:\s*", "", text)
     return text.strip().rstrip(".")
@@ -239,11 +237,97 @@ def choose_human_category(row: pd.Series, history_match: dict[str, str] | None) 
     return str(row.get("If in Zotero - Category", "") or "").strip()
 
 
+CATEGORY_ALIASES = {
+    "allergy": "Allergy and Immunology",
+    "allergy and immunology": "Allergy and Immunology",
+    "cardio": "Cardiology",
+    "cardiology": "Cardiology",
+    "derm": "Dermatology",
+    "dermatology": "Dermatology",
+    "development": "Development and Behavior",
+    "development and behavior": "Development and Behavior",
+    "behavior": "Development and Behavior",
+    "endocrinology": "Endocrinology",
+    "gastro": "Gastroenterology",
+    "gastroenterology": "Gastroenterology",
+    "general": "General and Reviews",
+    "general_and_reviews": "General and Reviews",
+    "general and reviews": "General and Reviews",
+    "reviews": "General and Reviews",
+    "genetic": "Genetics",
+    "genetics": "Genetics",
+    "growth": "Growth",
+    "gynecology": "Gynecology",
+    "neuro": "Neurology",
+    "neuology": "Neurology",
+    "neurology": "Neurology",
+    "oncology": "Oncology",
+    "ophthalmology": "Ophthalmology",
+    "orthopedic": "Orthopedic",
+    "orthopedics": "Orthopedic",
+    "ent": "Otolaryngology",
+    "otolaryngology ent": "Otolaryngology",
+    "otolaryngology_ent": "Otolaryngology",
+    "otolaryngology": "Otolaryngology",
+    "pulmonology": "Pulmonology",
+    "research": "Research Studies",
+    "research studies": "Research Studies",
+    "seizure": "Seizures",
+    "seizures": "Seizures",
+    "treatment": "Treatments",
+    "treatments": "Treatments",
+    "exclude": "Excluded",
+    "excluded": "Excluded",
+    "exclusion": "Excluded",
+}
+
+
 def split_categories(value: object) -> set[str]:
     if value is None or pd.isna(value):
         return set()
-    parts = re.split(r"[,;/|]", str(value))
-    return {part.strip() for part in parts if part.strip()}
+    text = str(value).strip().lower()
+    if not text:
+        return set()
+    protected = {
+        "allergy and immunology": "allergy_immunology",
+        "development and behavior": "development_behavior",
+        "general and reviews": "general_reviews",
+    }
+    for phrase, token in protected.items():
+        text = text.replace(phrase, token)
+    text = re.sub(r"\badditional\s*:\s*", ";", text)
+    text = text.replace("&", ";")
+    text = re.sub(r"\band\b", ";", text)
+    text = text.replace(",", ";").replace("/", ";").replace("|", ";")
+    for phrase, token in protected.items():
+        text = text.replace(token, phrase)
+    parts = [re.sub(r"\s+", " ", part).strip(" .;:?") for part in text.split(";")]
+    categories: set[str] = set()
+    for part in parts:
+        if not part:
+            continue
+        if part in CATEGORY_ALIASES:
+            categories.add(CATEGORY_ALIASES[part])
+            continue
+        for alias, category in CATEGORY_ALIASES.items():
+            if re.search(rf"\b{re.escape(alias)}\b", part):
+                categories.add(category)
+    return {category for category in categories if category in CATEGORIES or category == "Excluded"}
+
+
+def is_exclusion_category(value: object) -> bool:
+    return "Excluded" in split_categories(value)
+
+
+def zotero_screen_from_category(value: object) -> str:
+    text = str(value or "").strip()
+    if not text or normalize_text(text) in {"not in zotero", "unfiled"}:
+        return ""
+    if is_exclusion_category(text):
+        return "out"
+    if split_categories(text):
+        return "in"
+    return ""
 
 
 def enrich_review_rows(review_df: pd.DataFrame, history: dict[str, dict[str, dict[str, str]]]) -> pd.DataFrame:
@@ -251,9 +335,18 @@ def enrich_review_rows(review_df: pd.DataFrame, history: dict[str, dict[str, dic
     for _, row in review_df.iterrows():
         match = lookup_history(row, history)
         openai_screen = screening_direction(row.get("OpenAI Screening In or Out") or row.get("Relevance"))
+        zotero_category = str(row.get("If in Zotero - Category", "") or "").strip()
         human_screen = match.get("screen", "") if match else ""
+        if not human_screen:
+            human_screen = zotero_screen_from_category(zotero_category)
         human_category = choose_human_category(row, match)
+        if is_exclusion_category(human_category):
+            human_category = ""
         openai_category = str(row.get("OpenAI Assigned Category", "") or "").strip()
+        if openai_screen == "out":
+            openai_category = ""
+        human_categories = split_categories(human_category)
+        openai_categories = split_categories(openai_category)
         matrix_cell = ""
         if human_screen == "in" and openai_screen == "in":
             matrix_cell = "TP"
@@ -276,9 +369,14 @@ def enrich_review_rows(review_df: pd.DataFrame, history: dict[str, dict[str, dic
                 "Screening Match?": "Yes" if human_screen and openai_screen and human_screen == openai_screen else ("No" if human_screen and openai_screen else ""),
                 "Human Category": human_category,
                 "OpenAI Category": openai_category,
-                "Category Match?": "Yes" if human_category and openai_category and openai_category in split_categories(human_category) else ("No" if human_category and openai_category else ""),
+                "Human Categories Normalized": "; ".join(category for category in CATEGORIES if category in human_categories),
+                "OpenAI Categories Normalized": "; ".join(category for category in CATEGORIES if category in openai_categories),
+                "Category Exact Match?": "Yes" if human_categories and openai_categories and human_categories == openai_categories else ("No" if human_categories and openai_categories else ""),
+                "Category Match?": "Yes" if human_categories and openai_categories and bool(human_categories & openai_categories) else ("No" if human_categories and openai_categories else ""),
+                "AI Subset of Human?": "Yes" if openai_categories and human_categories and openai_categories.issubset(human_categories) else ("No" if openai_categories and human_categories else ""),
+                "Human Subset of AI?": "Yes" if openai_categories and human_categories and human_categories.issubset(openai_categories) else ("No" if openai_categories and human_categories else ""),
                 "Found in Zotero?": row.get("Found in Zotero?", ""),
-                "Zotero Category": row.get("If in Zotero - Category", ""),
+                "Zotero Category": zotero_category,
                 "Human Source": match.get("source", "") if match else "",
                 "Human Notes": match.get("notes", "") if match else "",
             }
@@ -318,13 +416,43 @@ def build_overall_2x2(details: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def build_screening_matrix_table(details: pd.DataFrame) -> pd.DataFrame:
+    counts = details["Screening Matrix Cell"].value_counts()
+    tp = int(counts.get("TP", 0))
+    fp = int(counts.get("FP", 0))
+    fn = int(counts.get("FN", 0))
+    tn = int(counts.get("TN", 0))
+    return pd.DataFrame(
+        [
+            {
+                "Human \\ OpenAI": "Human Screen In",
+                "OpenAI Screen In": tp,
+                "OpenAI Screen Out": fn,
+                "Row Total": tp + fn,
+            },
+            {
+                "Human \\ OpenAI": "Human Screen Out",
+                "OpenAI Screen In": fp,
+                "OpenAI Screen Out": tn,
+                "Row Total": fp + tn,
+            },
+            {
+                "Human \\ OpenAI": "Column Total",
+                "OpenAI Screen In": tp + fp,
+                "OpenAI Screen Out": fn + tn,
+                "Row Total": tp + fp + fn + tn,
+            },
+        ]
+    )
+
+
 def build_category_2x2(details: pd.DataFrame) -> pd.DataFrame:
     rows = []
     for category in CATEGORIES:
         tp = fp = fn = tn = 0
         for _, row in details.iterrows():
             human_yes = category in split_categories(row.get("Human Category"))
-            openai_yes = category == str(row.get("OpenAI Category", "")).strip()
+            openai_yes = category in split_categories(row.get("OpenAI Category"))
             if human_yes and openai_yes:
                 tp += 1
             elif not human_yes and openai_yes:
@@ -337,6 +465,7 @@ def build_category_2x2(details: pd.DataFrame) -> pd.DataFrame:
         precision = tp / (tp + fp) if tp + fp else ""
         recall = tp / (tp + fn) if tp + fn else ""
         f1 = 2 * precision * recall / (precision + recall) if precision != "" and recall != "" and precision + recall else ""
+        specificity = tn / (tn + fp) if tn + fp else ""
         rows.append(
             {
                 "Category": category,
@@ -349,10 +478,57 @@ def build_category_2x2(details: pd.DataFrame) -> pd.DataFrame:
                 "Precision": precision,
                 "Recall": recall,
                 "F1_Score": f1,
+                "Specificity": specificity,
                 "Needs_Review": fp + fn,
             }
         )
     return pd.DataFrame(rows)
+
+
+def build_category_overlap_summary(details: pd.DataFrame) -> pd.DataFrame:
+    comparable = details[
+        details["Human Categories Normalized"].astype(str).str.strip().ne("")
+        & details["OpenAI Categories Normalized"].astype(str).str.strip().ne("")
+    ].copy()
+    denominator = len(comparable)
+
+    def percent_yes(column: str) -> float | str:
+        if denominator == 0:
+            return ""
+        return float((comparable[column] == "Yes").sum() / denominator)
+
+    return pd.DataFrame(
+        [
+            {
+                "Metric": "Exact category-list match",
+                "Percent": percent_yes("Category Exact Match?"),
+                "Numerator": int((comparable["Category Exact Match?"] == "Yes").sum()) if denominator else 0,
+                "Denominator": denominator,
+                "Meaning": "AI and human category lists are identical after normalization.",
+            },
+            {
+                "Metric": "Any category overlap",
+                "Percent": percent_yes("Category Match?"),
+                "Numerator": int((comparable["Category Match?"] == "Yes").sum()) if denominator else 0,
+                "Denominator": denominator,
+                "Meaning": "AI and human share at least one category; this is fairer for multi-category articles.",
+            },
+            {
+                "Metric": "AI subset of human",
+                "Percent": percent_yes("AI Subset of Human?"),
+                "Numerator": int((comparable["AI Subset of Human?"] == "Yes").sum()) if denominator else 0,
+                "Denominator": denominator,
+                "Meaning": "AI chose only categories that humans also chose, even if it missed an additional human category.",
+            },
+            {
+                "Metric": "Human subset of AI",
+                "Percent": percent_yes("Human Subset of AI?"),
+                "Numerator": int((comparable["Human Subset of AI?"] == "Yes").sum()) if denominator else 0,
+                "Denominator": denominator,
+                "Meaning": "AI covered all human categories, even if it added an extra category.",
+            },
+        ]
+    )
 
 
 def write_workbook(
@@ -370,6 +546,8 @@ def write_workbook(
         | (details["Screening Matrix Cell"].isin(["FP", "FN"]))
     ].copy()
     missing_human = details[details["Human Found In Sheets"] == "No"].copy()
+    matrix_table = build_screening_matrix_table(details)
+    overlap_summary = build_category_overlap_summary(details)
     run_log = pd.DataFrame(
         [
             {"Field": "Input workbook", "Value": str(input_path)},
@@ -381,10 +559,16 @@ def write_workbook(
             {"Field": "FP", "Value": "Human screened out and OpenAI screened in."},
             {"Field": "FN", "Value": "Human screened in and OpenAI screened out."},
             {"Field": "TN", "Value": "Human screened out and OpenAI screened out."},
+            {"Field": "Category normalization", "Value": "Uses human-aligned category aliases; splits semicolon/comma/slash/and lists; excludes Historical Articles and Conferences."},
+            {"Field": "Criteria alignment", "Value": "Aligned with stricter CFC rules: meaningful CFC discussion required; passing mentions/figure-only/reference-only CFC allusions should be excluded upstream."},
+            {"Field": "Zotero Exclusion rule", "Value": "Items found in Zotero's Exclusion/Excluded folder are treated as human screen-out, not as a clinical category."},
+            {"Field": "Zotero category rule", "Value": "When Google Sheets history is missing, a non-exclusion Zotero folder is treated as the human category/screen-in evidence."},
         ]
     )
 
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+        matrix_table.to_excel(writer, sheet_name="Screening_Matrix", index=False)
+        overlap_summary.to_excel(writer, sheet_name="Category_Overlap", index=False)
         overall.to_excel(writer, sheet_name="Overall_2x2", index=False)
         category_summary.to_excel(writer, sheet_name="Category_2x2", index=False)
         details.to_excel(writer, sheet_name="Article_Details", index=False)
