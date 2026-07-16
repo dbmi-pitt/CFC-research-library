@@ -45,6 +45,12 @@ CFC_GENES = ("BRAF", "MAP2K1", "MAP2K2", "KRAS")
 
 REVIEWER_DECISIONS = ("Needs reviewed", "Approved", "Not approved")
 
+PROMPT_DIR = Path("prompts")
+REVIEW_CLASSIFICATION_PROMPT_FILE = PROMPT_DIR / "review_classification_prompt.txt"
+CATEGORY_GUIDANCE_FILE = PROMPT_DIR / "category_guidance.json"
+PRIORITY_RULES_FILE = PROMPT_DIR / "priority_rules.txt"
+ARTICLE_TYPES_FILE = PROMPT_DIR / "article_types.txt"
+
 DEFAULT_SCREENING_HISTORY_URL = (
     "https://docs.google.com/spreadsheets/d/1BUvWcV6XgYiOL3cCrYAHjkccb24C38OK/"
     "edit?usp=sharing&ouid=106518116377917721454&rtpof=true&sd=true"
@@ -634,6 +640,84 @@ CATEGORY_PRIORITY_RULES = [
     "If growth trajectory, stature, bone age, or pubertal growth is the primary objective, choose Growth; if endocrine physiology is primary, choose Endocrinology.",
     "If no specialty category clearly dominates original CFC-relevant mechanistic research, choose Research Studies.",
 ]
+
+
+def load_prompt_text(path: Path, default: str) -> str:
+    if path.exists():
+        return path.read_text(encoding="utf-8", errors="replace")
+    return default
+
+
+def load_prompt_list(path: Path, default: list[str]) -> list[str]:
+    if not path.exists():
+        return default
+    values = [
+        line.strip()
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    return values or default
+
+
+def load_category_guidance() -> dict[str, dict[str, list[str]]]:
+    if not CATEGORY_GUIDANCE_FILE.exists():
+        return CATEGORY_CLASSIFICATION_GUIDANCE
+    try:
+        external = json.loads(CATEGORY_GUIDANCE_FILE.read_text(encoding="utf-8", errors="replace"))
+    except json.JSONDecodeError:
+        return CATEGORY_CLASSIFICATION_GUIDANCE
+    if not isinstance(external, dict):
+        return CATEGORY_CLASSIFICATION_GUIDANCE
+
+    merged = json.loads(json.dumps(CATEGORY_CLASSIFICATION_GUIDANCE))
+    for category, guidance in external.items():
+        if not isinstance(guidance, dict):
+            continue
+        merged.setdefault(category, {})
+        for field in ("include_if", "exclude_if", "strong_indicators", "negative_examples"):
+            values = guidance.get(field)
+            if isinstance(values, list):
+                merged[category][field] = [str(value) for value in values]
+    return merged
+
+
+def load_review_classification_prompt_template() -> str:
+    default = (
+        "Classify each article for a CFC syndrome research library.\n\n"
+        "Use Zotero indexed full text when available. Apply the category definitions, "
+        "priority rules, and human Zotero examples.\n\n"
+        "Article types:\n{article_types}\n\n"
+        "Category priority rules:\n{category_priority_rules}\n\n"
+        "Existing human Zotero categorization examples:\n{zotero_examples}\n\n"
+        "New inclusion/exclusion criteria and category definitions:\n{category_definitions}\n\n"
+        "Articles:\n{articles}\n\n"
+        "Return only valid JSON with articles containing row_index, decision, article_type, "
+        "primary_objective, ai_category, additional_categories, confidence, and reasoning."
+    )
+    return load_prompt_text(REVIEW_CLASSIFICATION_PROMPT_FILE, default)
+
+
+def prompt_files_frame() -> DataFrame:
+    rows = []
+    for label, path in [
+        ("Review classification prompt", REVIEW_CLASSIFICATION_PROMPT_FILE),
+        ("Category guidance", CATEGORY_GUIDANCE_FILE),
+        ("Priority rules", PRIORITY_RULES_FILE),
+        ("Article types", ARTICLE_TYPES_FILE),
+    ]:
+        content = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
+        chunks = [content[index : index + 30000] for index in range(0, len(content), 30000)] or [""]
+        for part, chunk in enumerate(chunks, start=1):
+            rows.append(
+                {
+                    "Prompt_File": label,
+                    "Path": str(path),
+                    "Exists": "Yes" if path.exists() else "No",
+                    "Part": part,
+                    "Content": chunk,
+                }
+            )
+    return pd.DataFrame(rows)
 
 
 SECTION_ALIASES = {
@@ -1352,16 +1436,17 @@ def add_deep_learning_review_columns(df: DataFrame, model_choice: str, label_cou
 
 
 def openai_review_categories_payload() -> list[dict[str, str]]:
+    guidance_by_category = load_category_guidance()
     return [
         {
             "category": section.name,
             "description": section.description,
             "inclusion": section.inclusion,
             "exclusion": section.exclusion,
-            "include_if": CATEGORY_CLASSIFICATION_GUIDANCE.get(section.name, {}).get("include_if", []),
-            "exclude_if": CATEGORY_CLASSIFICATION_GUIDANCE.get(section.name, {}).get("exclude_if", []),
-            "strong_indicators": CATEGORY_CLASSIFICATION_GUIDANCE.get(section.name, {}).get("strong_indicators", []),
-            "negative_examples": CATEGORY_CLASSIFICATION_GUIDANCE.get(section.name, {}).get("negative_examples", []),
+            "include_if": guidance_by_category.get(section.name, {}).get("include_if", []),
+            "exclude_if": guidance_by_category.get(section.name, {}).get("exclude_if", []),
+            "strong_indicators": guidance_by_category.get(section.name, {}).get("strong_indicators", []),
+            "negative_examples": guidance_by_category.get(section.name, {}).get("negative_examples", []),
         }
         for section in SECTIONS.values()
         if section.name not in EXCLUDED_COMPARISON_FOLDERS
@@ -1414,7 +1499,91 @@ def parse_json_response(text: str) -> dict:
         raise
 
 
-def add_openai_review_columns(df: DataFrame, batch_size: int = 5, zotero_examples_text: str = "") -> DataFrame:
+def fallback_review_assignment(row: Any) -> tuple[str, str, str, str]:
+    """Selective backup for OpenAI failures; mirrors PromptTest_08 screening style."""
+    title = str(row.get("Title", "") or "")
+    abstract = str(row.get("Abstract", "") or "")
+    combined = f"{title} {abstract}".lower()
+    title_lower = title.lower()
+
+    google_screen = screening_direction(row.get("Google_Sheets_Decision", ""))
+    zotero_found = str(row.get("Zotero_Found", "") or "").strip()
+    zotero_category = str(row.get("Zotero_Current_Category", "") or "").strip()
+    zotero_labels = split_category_labels(zotero_category)
+    dl_category = str(row.get("Deep_Learning_Top_Category", "") or "").strip()
+    dl_secondary = str(row.get("Deep_Learning_Suggested_Categories", "") or "").strip()
+
+    if zotero_found == "Yes" and any(label in EXCLUDED_COMPARISON_FOLDERS for label in zotero_labels):
+        return "Not relevant", "", "", "Fallback screened out because Zotero category is Exclusion/Excluded."
+
+    if google_screen == "out":
+        return "Not relevant", "", "", "Fallback screened out because prior screening history marked this out."
+
+    if zotero_found == "Yes" and zotero_labels and "unfiled" not in {label.lower() for label in zotero_labels}:
+        primary = next((label for label in zotero_labels if label in SECTIONS and label not in EXCLUDED_COMPARISON_FOLDERS), "")
+        return "Relevant", primary or dl_category, "", "Fallback screened in because the article is already filed in Zotero."
+
+    if google_screen == "in":
+        return "Relevant", dl_category, dl_secondary, "Fallback screened in because prior screening history marked this in."
+
+    has_cfc_signal = any(signal in combined for signal in STRONG_CFC_SIGNALS)
+    has_cfc_in_title = any(signal in title_lower for signal in STRONG_CFC_SIGNALS)
+    has_other_rasopathy_title = any(signal in title_lower for signal in OTHER_RASOPATHY_SIGNALS)
+    broad_non_cfc_patterns = (
+        "noonan syndrome",
+        "costello syndrome",
+        "legius syndrome",
+        "neurofibromatosis type 1",
+        "nf1",
+        "melanoma",
+        "cancer",
+        "somatic",
+        "clinGen".lower(),
+        "gene curation",
+        "mouse model of rasopathy",
+        "noonan syndrome-associated",
+        "noonan syndrome spectrum",
+        "ptpn11-associated noonan",
+    )
+    broad_rasopathy_patterns = (
+        "rasopathies",
+        "rasopathy",
+        "ras/mapk",
+        "mapk pathway",
+        "ras signaling",
+    )
+
+    if not has_cfc_signal and any(pattern in combined for pattern in broad_non_cfc_patterns):
+        return "Not relevant", "", "", "Fallback screened out because this appears to be Noonan/other-condition/broad biology without substantive CFC evidence."
+
+    if not has_cfc_signal and any(pattern in combined for pattern in broad_rasopathy_patterns):
+        return "Not relevant", "", "", "Fallback screened out because this appears to be broad RASopathy/RAS-MAPK context without substantive CFC evidence."
+
+    if has_cfc_in_title:
+        return "Relevant", dl_category, dl_secondary, "Fallback screened in because CFC is central in the title."
+
+    if has_cfc_signal:
+        return "Possibly relevant", dl_category, dl_secondary, "Fallback marked Needs review because CFC appears in the text but centrality could not be confirmed after OpenAI failed."
+
+    if has_other_rasopathy_title:
+        return "Not relevant", "", "", "Fallback screened out because the title is focused on another RASopathy and no CFC signal was found."
+
+    return "Not relevant", "", "", "Fallback screened out because no substantive CFC signal was found after OpenAI failed."
+
+
+def keep_openai_secondary_category(category: str, primary: str, confidence: str) -> bool:
+    if not category or category == primary:
+        return False
+    if category == "General and Reviews" and primary != "General and Reviews":
+        return False
+    return category in category_names_for_openai()
+
+
+def add_openai_review_columns(
+    df: DataFrame,
+    batch_size: int = 5,
+    zotero_examples_text: str = "",
+) -> DataFrame:
     if df.empty:
         return df
     api_key = os.getenv("OPENAI_API_KEY")
@@ -1438,6 +1607,9 @@ def add_openai_review_columns(df: DataFrame, batch_size: int = 5, zotero_example
         output[column] = ""
 
     categories = openai_review_categories_payload()
+    article_types = load_prompt_list(ARTICLE_TYPES_FILE, ARTICLE_TYPES)
+    priority_rules = load_prompt_list(PRIORITY_RULES_FILE, CATEGORY_PRIORITY_RULES)
+    prompt_template = load_review_classification_prompt_template()
     for start in range(0, len(output), batch_size):
         batch = output.iloc[start : start + batch_size]
         articles = []
@@ -1481,113 +1653,12 @@ def add_openai_review_columns(df: DataFrame, batch_size: int = 5, zotero_example
                 }
             )
 
-        prompt = textwrap.dedent(
-            f"""
-            Classify each article for a CFC syndrome research library.
-
-            Use the available Zotero indexed full text when present. If full text is not present,
-            use title, abstract, journal, and metadata.
-
-            Think like an experienced human curator. Do not immediately assign a category.
-            Follow this hierarchical decision process for every article:
-
-            Step 1: Determine whether the article contains substantial CFC-specific evidence.
-            If no, set decision to "Excluded" and leave ai_category blank.
-            If yes, continue.
-
-            Step 2: Determine article_type using only one of:
-            {json.dumps(ARTICLE_TYPES)}
-
-            Step 3: Identify the SINGLE primary scientific objective.
-            The primary objective is the hypothesis, primary research question, or main outcome measured.
-            It is not every phenotype mentioned.
-
-            Step 4: Compare only the plausible categories suggested by the article text, PubMed query matches,
-            deep-learning suggestions, category guidance, and human Zotero examples.
-            Do not score every category.
-
-            Step 5: Assign exactly one primary category.
-
-            Step 6: Assign one additional category only if a second specialty accounts for about 30% or more of the paper
-            or the paper has two equally important scientific objectives. Do not add categories for phenotype mentions.
-
-            Confidence scoring:
-            - High: primary objective is obvious and one category clearly scores highest.
-            - Medium: some category overlap exists, but one category is still best.
-            - Low: paper could reasonably fit multiple categories or evidence is limited.
-            Low-confidence non-excluded papers must use decision "Needs review".
-
-            Output rules:
-            - Exclude articles that are clearly not related to CFC, CFC-associated RAS/MAPK biology, or clinically relevant RASopathy comparison.
-            - Exclude Noonan-only, Costello-only, Legius-only, NF1-only, cancer-only, somatic mutation-only, or broad pathway papers when they do not provide CFC data, a CFC-associated mutation/model, a shared RASopathy mechanism, or useful clinical comparison for CFC.
-            - Inspect the supplied full text when available. If CFC is only barely mentioned, appears only in a passing disease list, appears only in a figure/table label, appears only in references, or is not substantively discussed in the aims/results/discussion, set decision to "Excluded".
-            - If the article is clearly about another condition and only mentions RAS/MAPK, BRAF, MAP2K1, MAP2K2, KRAS, or RASopathy in passing, set decision to "Excluded".
-            - If CFC relevance is uncertain but plausible, set decision to "Needs review" and assign the best tentative category so Lexi can check it.
-            - If an article is about Noonan syndrome, Costello syndrome, Legius syndrome, NF1, or general RASopathies but may provide useful comparison, shared mechanism, Noonan-spectrum context, or CFC-relevant mutation/model information, use "Needs review" rather than excluding it.
-            - Do not exclude CFC-specific clinical guidelines, diagnostic criteria papers, CFC index papers, prenatal diagnosis overviews, or CFC-focused management papers just because they are not original research. Classify these as "General and Reviews".
-            - If a RASopathy-wide review or overview meaningfully discusses CFC, compares CFC with other RASopathies, or provides useful CFC clinical/genetic/management context, classify it as "General and Reviews" instead of excluding it.
-            - If the article is a review, broad overview, clinical guideline, consensus statement, diagnostic summary, educational summary, or case report/case series that does not present a new mutation, new disease mechanism, new experimental result, new genotype-phenotype analysis, or previously undescribed clinical manifestation, classify it as "General and Reviews".
-            - If the article is about an adult with CFC and is mainly a case report, clinical summary, or literature review, classify it as "General and Reviews" unless it presents a clearly novel specialty-specific finding.
-            - If a review mainly addresses treatment options or therapeutic landscape, prefer "Treatments" as the primary category and add the organ system as an additional category when appropriate.
-            - Human review examples to follow: CFC clinical management guidelines, CFC index/diagnostic criteria papers, prenatal diagnosis overviews with meaningful CFC discussion, and RASopathy reviews with substantive CFC comparison belong in "General and Reviews"; autoimmune or other RASopathy cohorts with actual CFC participants can belong in the relevant specialty; papers that only allude to CFC in one figure/table/reference should be excluded.
-            - Use a specialty category only when the article contributes new original evidence or a clearly specialty-specific clinical finding for that folder.
-            - Do not assign specialty folders to review articles merely because the review mentions that organ system.
-            - Choose exactly one primary category. The primary category should reflect the article's main purpose, not every phenotype mentioned.
-            - Secondary categories should be rare. Add at most one additional category unless the article has two clearly separate main objectives.
-            - Do not add "General and Reviews" as an additional category to original research, case reports with a clear specialty finding, genotype/variant papers, or organ-system studies just because they contain background.
-            - Use "General and Reviews" as primary only when the article is mainly a review, guideline, diagnostic/index paper, broad phenotype overview, or management/background paper.
-            - If a paper is broad CFC clinical characterization, diagnosis, management guidance, or patient education, prefer "General and Reviews" unless there is a clearly novel specialty finding.
-            - If a paper primarily identifies or validates a CFC pathogenic variant, genotype-phenotype relationship, inheritance pattern, or variant function for clinical genetics, prefer "Genetics" even if it also describes clinical features.
-            - If a paper primarily studies hypertrophic cardiomyopathy, heart function, MEK inhibition for cardiac disease, arrhythmia, or cardiac surveillance, prefer "Cardiology".
-            - If a paper is primarily epilepsy, EEG, seizure phenotype, or seizure treatment, prefer "Seizures" rather than Neurology.
-            - If a paper is primarily broader motor milestones, behavior, cognition, motor function, hypotonia, or neuroimaging without seizure focus, prefer "Neurology" or "Development and Behavior" based on the main outcome.
-            - If a paper mainly describes skin, hair, nail, eczema, keratosis, or other cutaneous findings, prefer "Dermatology" even if CFC genetics are mentioned.
-            - If zotero_current_category is Exclusion or Excluded, treat that as prior human screen-out context, not as a clinical category. Judge the article independently, but do not assign Exclusion as a category.
-            - If excluded, leave ai_category blank and explain the specific exclusion reason.
-            - If decision is "Needs review", still provide the best tentative ai_category.
-            - If included, choose one primary category in ai_category.
-            - If the article clearly belongs in more than one category, mention additional categories in additional_categories.
-            - Do not add multiple categories just because the article mentions multiple symptoms; only add them when the article substantially belongs in those sections.
-            - Do not use Historical Articles or Conferences.
-
-            Category priority rules:
-            {json.dumps(CATEGORY_PRIORITY_RULES, indent=2)}
-
-            Existing human Zotero categorization examples:
-            {zotero_examples_text or "No Zotero examples were available for this run."}
-
-            New inclusion/exclusion criteria and category definitions:
-            {json.dumps(categories, indent=2)}
-
-            Human-corrected examples to follow:
-            - "Clinical analysis of a child with cardio-facio-cutaneous syndrome due to a de novo variant of MAP2K1 gene" -> Included, Genetics, no additional category.
-            - "Cardio-facio-cutaneous syndrome: clinical features, diagnosis, and management guidelines" -> Included, General and Reviews.
-            - "CFC index for the diagnosis of cardiofaciocutaneous syndrome" -> Included, General and Reviews.
-            - "An Assessment of the Therapeutic Landscape for the Treatment of Heart Disease in the RASopathies" -> Included or Needs review, Treatments; Additional: Cardiology.
-            - "Autoimmune disease and multiple autoantibodies in 42 patients with RASopathies" -> Included or Needs review if CFC participants are included, Allergy and Immunology.
-            - "RASopathy Gene Mutations in Melanoma" -> Excluded when CFC is not substantively discussed.
-
-            Articles:
-            {json.dumps(articles, indent=2)}
-
-            Return only valid JSON in this exact shape:
-            {{
-              "articles": [
-                {{
-                  "row_index": 0,
-                  "decision": "Included",
-                  "article_type": "Original research",
-                  "primary_objective": "Primary objective based on title/abstract/full text.",
-                  "ai_category": "Cardiology",
-                  "additional_categories": ["Genetics"],
-                  "confidence": "High",
-                  "reasoning": "Evidence-based rationale explaining why the primary category was chosen using title/abstract/full-text evidence."
-                }}
-              ]
-            }}
-
-            Reasoning must explain why the primary category was chosen, not merely list topics.
-            """
+        prompt = prompt_template.format(
+            article_types=json.dumps(article_types, indent=2),
+            category_priority_rules=json.dumps(priority_rules, indent=2),
+            zotero_examples=zotero_examples_text or "No Zotero examples were available for this run.",
+            category_definitions=json.dumps(categories, indent=2),
+            articles=json.dumps(articles, indent=2),
         ).strip()
 
         try:
@@ -1597,13 +1668,14 @@ def add_openai_review_columns(df: DataFrame, batch_size: int = 5, zotero_example
         except Exception as exc:
             assignments = []
             for idx, row in batch.iterrows():
-                output.at[idx, "OpenAI_Relevance_Decision"] = "Possibly relevant"
-                output.at[idx, "OpenAI_Primary_Category"] = str(row.get("Deep_Learning_Top_Category", ""))
-                output.at[idx, "OpenAI_Secondary_Categories"] = str(row.get("Deep_Learning_Suggested_Categories", ""))
+                fallback_relevance, fallback_primary, fallback_secondary, fallback_reason = fallback_review_assignment(row)
+                output.at[idx, "OpenAI_Relevance_Decision"] = fallback_relevance
+                output.at[idx, "OpenAI_Primary_Category"] = fallback_primary
+                output.at[idx, "OpenAI_Secondary_Categories"] = fallback_secondary if fallback_relevance != "Not relevant" else ""
                 output.at[idx, "OpenAI_Article_Type"] = ""
                 output.at[idx, "OpenAI_Primary_Objective"] = ""
                 output.at[idx, "OpenAI_Confidence"] = "Low"
-                output.at[idx, "OpenAI_Rationale"] = f"OpenAI review failed for this batch; fallback used deep learning. Error: {type(exc).__name__}"
+                output.at[idx, "OpenAI_Rationale"] = f"OpenAI review failed for this batch; {fallback_reason} Error: {type(exc).__name__}"
 
         for item in assignments:
             row_index = item.get("row_index")
@@ -1627,11 +1699,7 @@ def add_openai_review_columns(df: DataFrame, batch_size: int = 5, zotero_example
                 secondary_values = []
                 for value in secondary:
                     category = normalize_openai_category(value)
-                    if not category or category == primary:
-                        continue
-                    if category == "General and Reviews" and primary != "General and Reviews":
-                        continue
-                    if category in category_names_for_openai() and category not in secondary_values:
+                    if keep_openai_secondary_category(category, primary, confidence) and category not in secondary_values:
                         secondary_values.append(category)
                 secondary_text = ", ".join(secondary_values[:1])
             else:
@@ -1886,6 +1954,7 @@ def write_review_comparison_workbook(
         ).to_excel(writer, sheet_name="Category_Summary", index=False)
         criteria_frame().to_excel(writer, sheet_name="Criteria", index=False)
         pd.DataFrame({"Deep_Research_Brief": [deep_research_prompt]}).to_excel(writer, sheet_name="Deep_Research_Brief", index=False)
+        prompt_files_frame().to_excel(writer, sheet_name="Prompt_Files", index=False)
         if openai_run:
             pd.DataFrame([openai_run]).to_excel(writer, sheet_name="OpenAI_Run", index=False)
         run_log.to_excel(writer, sheet_name="Run_Log", index=False)
