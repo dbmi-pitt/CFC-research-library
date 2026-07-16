@@ -1,0 +1,30 @@
+If seizure/epilepsy/EEG is the primary outcome, choose Seizures rather than Neurology.
+If mutation discovery, variant validation, or genotype-phenotype correlation is the primary objective, choose Genetics even if organ findings are described.
+Treatments should be assigned only when evaluating therapy, comparing treatments, reporting treatment efficacy, reviewing therapeutic approaches, or describing treatment outcomes is the primary purpose of the paper.
+Do not assign Treatments just because medication is given, surgery occurs, anesthesia is discussed, supportive care is mentioned, management is discussed, or a case report includes treatment.
+Treatments should not be used as an additional category unless treatment is a major independent scientific contribution; incidental treatment details do not count.
+If the article is a review, clinical guideline, diagnostic paper, management paper, or broad clinical overview, choose General and Reviews unless it presents substantial new specialty-specific findings.
+If the article is an adult CFC case report, adult-with-CFC clinical summary, or adult CFC literature review, choose General and Reviews unless it presents a clearly novel specialty-specific finding.
+If the article is a specific CFC case report or case series, including a child with CFC, choose General and Reviews when there is no new scientifically meaningful finding beyond the case description.
+If a CFC case report presents a clear new specialty-specific finding, choose the category that represents that new finding.
+If skin/hair/nail findings are the primary objective, choose Dermatology even when CFC genetics are mentioned.
+If cardiac disease/function/imaging is the primary objective, choose Cardiology unless the article is primarily a broad review/guideline.
+If growth trajectory, stature, bone age, or pubertal growth is the primary objective, choose Growth; if endocrine physiology is primary, choose Endocrinology.
+If no specialty category clearly dominates original CFC-relevant mechanistic research, choose Research Studies.
+Assign exactly one primary category for nearly all publications.
+When uncertain between one category and two categories, choose one category.
+False positive categories reduce evaluation performance more than missing an optional additional category.
+Only add an additional category if it is a major independent scientific contribution, covers about 30% or more of the paper, and removing it would substantially change the scientific contribution.
+General and Reviews may be a rare additional category when a specialty paper also functions as a substantial management guide, clinical characteristics guide, or broad clinical summary.
+Do not add General and Reviews for routine background text, a short introduction, or brief general comments.
+Do not assign more than one of Genetics, Neurology, and Development and Behavior unless each represents an independent primary objective.
+When Genetics, Neurology, and Development and Behavior all appear relevant, choose Genetics if the primary contribution is mutation discovery or molecular biology; choose Neurology if the primary contribution is nervous system pathology or physiology; choose Development and Behavior if the primary contribution is developmental, cognitive, psychological, educational, or behavioral outcomes.
+Assign Genetics only when the primary contribution is pathogenic variant identification, novel mutation discovery, genotype-phenotype correlation, molecular mechanism, functional gene/protein analysis, RAS/MAPK signaling biology, or variant interpretation.
+Do not assign Genetics simply because BRAF, MAP2K1, MAP2K2, KRAS, or another gene name is mentioned.
+Be careful with prenatal or diagnostic papers: if the paper contributes new variant, genotype, inheritance, or molecular interpretation information, Genetics may be the best category even if it reads like a clinical summary.
+If a prenatal or diagnostic article mainly summarizes a case without new genetic insight, General and Reviews may be better.
+Assign Neurology only when the primary focus is nervous system structure or function, such as brain MRI, white matter abnormalities, cerebellum, peripheral neuropathy, hypotonia, motor dysfunction, movement disorders, cranial nerves, neurophysiology, or EEG when seizures are not primary.
+If the paper focuses on how the brain works or functions, choose Neurology.
+Do not assign Neurology for developmental delay alone, intellectual disability alone, autism, learning disabilities, behavioral concerns, or cognitive testing; use Development and Behavior.
+Assign Development and Behavior only when the primary objective evaluates developmental, cognitive, educational, psychological, language, adaptive, social, quality-of-life, or behavioral outcomes.
+Do not assign Development and Behavior when the paper primarily studies brain anatomy, MRI findings, white matter abnormalities, neuromuscular disease, peripheral nerves, seizures, or molecular genetics.
