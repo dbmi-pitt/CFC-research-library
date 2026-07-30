@@ -1,0 +1,494 @@
+{
+  "Allergy and Immunology": {
+    "include_if": [
+      "Primary objective is immune dysfunction, allergy, hypersensitivity, eczema/atopy, recurrent infection, autoimmunity, or inflammatory phenotype in CFC/RASopathy patients.",
+      "Original cohort/case data include actual CFC participants or CFC-associated RAS/MAPK mutations with immune findings."
+    ],
+    "exclude_if": [
+      "Immune/allergy terms appear only in a phenotype list or background.",
+      "Study is immunology-focused but lacks CFC data or CFC-relevant interpretation.",
+      "Paper is a broad review without new immune-specific findings.",
+      "Allergy and Immunology is only mentioned in the title but not relevant and significant in the paper. Review paper fully, do not just go off of title"
+    ],
+    "strong_indicators": [
+      "autoimmune",
+      "autoantibodies",
+      "immunodeficiency",
+      "hypersensitivity",
+      "atopy",
+      "eczema",
+      "recurrent infections",
+      "inflammation"
+    ],
+    "negative_examples": [
+      "Broad RASopathy overview listing recurrent infections among many features -> General and Reviews, not Allergy and Immunology.",
+      "Dermatology paper mentioning eczema as a skin finding -> Dermatology unless immune dysfunction is the main outcome.",
+      "Just mentions immunidefiency in title- not completely discussed throughout the paper -> category it primarily talks about"
+    ]
+  },
+  "Cardiology": {
+    "include_if": [
+      "Primary objective is cardiac disease, cardiac structure/function, rhythm, imaging, intervention, or cardiac outcomes.",
+      "New cardiac phenotype, cardiac cohort, cardiac imaging, cardiomyopathy mechanism, arrhythmia, or surveillance outcome is central."
+    ],
+    "exclude_if": [
+      "Heart findings appear only in background or phenotype lists.",
+      "Genetics paper only mentions cardiac findings while primary objective is mutation discovery.",
+      "Review/guideline/management overview without new cardiac data."
+    ],
+    "strong_indicators": [
+      "hypertrophic cardiomyopathy",
+      "pulmonary stenosis",
+      "arrhythmia",
+      "ventricle",
+      "myocardium",
+      "echocardiography",
+      "cardiac MRI",
+      "outflow obstruction"
+    ],
+    "negative_examples": [
+      "Clinical management of hypertrophic cardiomyopathy in CFC -> General and Reviews if it is a management review rather than original cardiac research.",
+      "MAP2K1 variant report with cardiac findings -> Genetics if mutation discovery is the primary objective."
+    ]
+  },
+  "Dermatology": {
+    "include_if": [
+      "Primary objective is skin, hair, nails, cutaneous phenotype, dermatologic natural history, or skin-related mechanism.",
+      "Paper presents new dermatologic findings, prospective dermatology data, or mechanistic cutaneous evidence."
+    ],
+    "exclude_if": [
+      "Skin findings appear only in broad phenotype background.",
+      "Article is primarily genetics, review, or another organ system and only lists dermatologic symptoms."
+    ],
+    "strong_indicators": [
+      "cutaneous",
+      "dermatologic",
+      "skin",
+      "hair",
+      "nail",
+      "keratosis",
+      "eczema",
+      "hyperkeratosis",
+      "keratosis pilaris",
+      "ulerythema"
+    ],
+    "negative_examples": [
+      "CFC clinical overview with a paragraph on skin -> General and Reviews, not Dermatology.",
+      "Genotype paper listing sparse hair and keratosis -> Genetics unless dermatology is the main outcome."
+    ]
+  },
+  "Development and Behavior": {
+    "include_if": [
+      "Primary objective is cognition, behavior, speech/language, adaptive function, learning, or motor milestones.",
+      "Study measures developmental or behavioral outcomes as a main endpoint."
+    ],
+    "exclude_if": [
+      "Developmental delay appears only as background.",
+      "Primary outcome is seizures, neuroimaging, genetics, or growth rather than development/behavior."
+    ],
+    "strong_indicators": [
+      "behavior",
+      "cognition",
+      "adaptive",
+      "speech",
+      "language",
+      "learning",
+      "motor milestones",
+      "developmental assessment",
+      "intellectual disability"
+    ],
+    "negative_examples": [
+      "Epilepsy cohort with developmental delay listed -> Seizures if seizure phenotype is primary.",
+      "Brain MRI paper with developmental context -> Neurology if imaging/brain findings are primary."
+    ]
+  },
+  "Endocrinology": {
+    "include_if": [
+      "Primary objective is endocrine, hormonal, metabolic, pubertal, renal/electrolyte, growth hormone physiology, or endocrine organ dysfunction.",
+      "Mechanistic work links CFC/RAS/MAPK mutations to endocrine or metabolic dysfunction."
+    ],
+    "exclude_if": [
+      "Short stature or feeding difficulty is mentioned without endocrine focus.",
+      "Physical growth trajectory is primary, which should usually be Growth.",
+      "GI feeding/nutrition is primary, which should usually be Gastroenterology."
+    ],
+    "strong_indicators": [
+      "hormone",
+      "growth hormone",
+      "puberty",
+      "pubertal",
+      "metabolic",
+      "renal",
+      "electrolyte",
+      "endocrine",
+      "thyroid",
+      "pituitary"
+    ],
+    "negative_examples": [
+      "Short stature cohort without endocrine testing -> Growth, not Endocrinology.",
+      "Feeding and reflux study -> Gastroenterology unless endocrine/metabolic dysfunction is primary."
+    ]
+  },
+  "Gastroenterology": {
+    "include_if": [
+      "Primary objective is feeding, reflux, constipation, motility, nutrition, GI dysfunction, aspiration related to feeding, or failure to thrive as GI/nutrition issue.",
+      "Paper presents new GI phenotype or management data specific to CFC/RASopathies."
+    ],
+    "exclude_if": [
+      "GI symptoms appear only in a phenotype list.",
+      "Endocrine/metabolic or growth hormone physiology is primary."
+    ],
+    "strong_indicators": [
+      "feeding",
+      "reflux",
+      "constipation",
+      "motility",
+      "gastrointestinal",
+      "nutrition",
+      "failure to thrive",
+      "swallowing",
+      "aspiration"
+    ],
+    "negative_examples": [
+      "Broad clinical features paper listing reflux -> General and Reviews unless GI is the main objective.",
+      "Growth hormone/puberty paper mentioning feeding -> Endocrinology or Growth, not Gastroenterology."
+    ]
+  },
+  "General and Reviews": {
+    "include_if": [
+      "Article type is review, clinical guideline, diagnostic paper, CFC index, management paper, broad clinical overview, broad phenotype-spectrum paper, or patient/clinical summary.",
+      "Case report/case series has no clearly specialty-specific new finding and mainly contributes broad clinical characterization.",
+      "Adult CFC case reports, adult CFC literature reviews, or adult-with-CFC clinical summaries do not belong here unless the paper presents a clearly novel specialty-specific finding.",
+      "Think, would a clinician learn something new about CFC from this paper? If no, then it is likely General and Reviews."
+    ],
+    "exclude_if": [
+      "Original research has a clear specialty-specific primary outcome.",
+      "Mutation discovery/genotype-phenotype paper is primary Genetics.",
+      "Treatment landscape paper is primary Treatments.",
+      "General background appears before a more specific study objective.",
+      "Does not directly contribute to CFC clinical knowledge or management, which should be excluded."
+    ],
+    "strong_indicators": [
+      "review",
+      "case report",
+      "literature review",
+      "guideline",
+      "diagnostic criteria",
+      "diagnosis",
+      "index",
+      "overview",
+      "management",
+      "clinical features",
+      "phenotype spectrum",
+      "consensus",
+      "adult"
+    ],
+    "negative_examples": [
+      "Dermatology case series with background review -> Dermatology.",
+      "Genetic variant discovery paper with broad introduction -> Genetics.",
+      "Treatment-focused review -> Treatments, with organ system only if substantial."
+    ]
+  },
+  "Genetics": {
+    "include_if": [
+      "Primary objective is mutation discovery, variant validation, genotype-phenotype correlation, inheritance, molecular diagnosis, or variant function.",
+      "CFC-associated BRAF, MAP2K1, MAP2K2, KRAS, or RAS/MAPK mutation biology is the central scientific question.",
+      "Think, would a clinician learn something new about CFC genetics from this paper? If no, then it is likely General and Reviews. Look for something that is new, not simply restating previous information"
+    ],
+    "exclude_if": [
+      "Genes are mentioned only as background for a specialty phenotype.",
+      "Paper is broad review/guideline rather than original genetic analysis.",
+      "Mentioned in the background of the disease, is not the main focus of the paper."
+    ],
+    "strong_indicators": [
+      "BRAF",
+      "new",
+      "MAP2K1",
+      "MAP2K2",
+      "KRAS",
+      "variant",
+      "mutation",
+      "genotype",
+      "phenotype correlation",
+      "de novo",
+      "molecular diagnosis"
+    ],
+    "negative_examples": [
+      "Dermatology study noting patients are HRAS/BRAF positive -> Dermatology if skin outcomes are primary.",
+      "Clinical management guideline mentioning genes -> General and Reviews.",
+      "Cardiovascular article that breifly mentions the genes associated with CFC -> Cardiology if cardiac outcomes are primary, if not then it belongs to General and Reviews."
+    ]
+  },
+  "Growth": {
+    "include_if": [
+      "Primary objective is stature, linear growth, growth velocity, bone age, pubertal growth, growth hormone treatment/outcomes, or growth trajectory.",
+      "Noonan-spectrum growth study is included when it informs shared CFC/RASopathy growth mechanisms."
+    ],
+    "exclude_if": [
+      "Short stature appears only in phenotype list.",
+      "Feeding/failure to thrive is primary GI/nutrition issue.",
+      "Endocrine physiology rather than growth trajectory is primary."
+    ],
+    "strong_indicators": [
+      "growth",
+      "stature",
+      "short stature",
+      "linear growth",
+      "growth velocity",
+      "bone age",
+      "puberty",
+      "pubertal",
+      "growth hormone"
+    ],
+    "negative_examples": [
+      "Broad phenotype paper listing short stature -> General and Reviews.",
+      "Feeding difficulty/failure-to-thrive study -> Gastroenterology unless growth trajectory is the main outcome."
+    ]
+  },
+  "Gynecology": {
+    "include_if": [
+      "Primary objective is reproductive, menstrual, genital tract, ovarian/uterine, pubertal gynecologic, or reproductive endocrine phenotype.",
+      "CFC/RASopathy patient data or CFC-associated mutation model is present."
+    ],
+    "exclude_if": [
+      "Puberty is discussed only as general growth/endocrine background.",
+      "Study is endocrine but not gynecologic/reproductive."
+    ],
+    "strong_indicators": [
+      "menstrual",
+      "reproductive",
+      "ovarian",
+      "uterine",
+      "gynecologic",
+      "genital",
+      "puberty",
+      "pubertal development"
+    ],
+    "negative_examples": [
+      "Growth/puberty paper without gynecologic focus -> Growth or Endocrinology.",
+      "Broad review listing delayed puberty -> General and Reviews."
+    ]
+  },
+  "Neurology": {
+    "include_if": [
+      "Primary objective is brain structure, hypotonia, motor delay, neuroimaging, neurologic physiology, cognition related to neurologic findings, or white matter/brain abnormalities.",
+      "Neurologic phenotype is the main outcome and seizure is not the primary focus."
+    ],
+    "exclude_if": [
+      "Seizures/EEG/epilepsy are the primary outcome, which should be Seizures.",
+      "Development/behavior scales are primary without neurologic findings, which may be Development and Behavior."
+    ],
+    "strong_indicators": [
+      "hypotonia",
+      "motor delay",
+      "MRI",
+      "neuroimaging",
+      "brain",
+      "white matter",
+      "cognition",
+      "neurologic",
+      "coordination"
+    ],
+    "negative_examples": [
+      "EEG/seizure phenotype paper -> Seizures, not Neurology.",
+      "Behavioral assessment paper without neurologic findings -> Development and Behavior."
+    ]
+  },
+  "Oncology": {
+    "include_if": [
+      "Primary objective is tumor development, cancer risk, malignancy surveillance, oncogenic mechanism, leukemia, melanoma, or neoplasm in CFC/RASopathy context.",
+      "CFC-associated mutation is used to model malignancy or oncogenic RAS/MAPK biology."
+    ],
+    "exclude_if": [
+      "Somatic cancer mutation paper does not discuss CFC clinically or mechanistically.",
+      "Cancer biology mentions BRAF/MAPK but lacks CFC relevance."
+    ],
+    "strong_indicators": [
+      "tumor",
+      "cancer",
+      "neoplasm",
+      "malignancy",
+      "leukemia",
+      "melanoma",
+      "oncogenic",
+      "surveillance"
+    ],
+    "negative_examples": [
+      "RASopathy gene mutations in melanoma without substantive CFC discussion -> Excluded.",
+      "General BRAF cancer pathway paper -> Excluded unless CFC-specific interpretation exists."
+    ]
+  },
+  "Ophthalmology": {
+    "include_if": [
+      "Primary objective is ocular structure, vision, strabismus, nystagmus, ptosis, refractive error, optic nerve, retina, cornea, or eye development.",
+      "Paper presents ocular phenotype/outcomes in CFC/RASopathy patients or CFC mutation model."
+    ],
+    "exclude_if": [
+      "Eye findings appear only in a phenotype list.",
+      "Broad clinical review has no new ocular finding."
+    ],
+    "strong_indicators": [
+      "ocular",
+      "ophthalmology",
+      "vision",
+      "strabismus",
+      "nystagmus",
+      "ptosis",
+      "refractive",
+      "optic nerve",
+      "retina",
+      "cornea"
+    ],
+    "negative_examples": [
+      "CFC overview listing strabismus -> General and Reviews.",
+      "Genetic case report mentioning eye findings -> Genetics if variant discovery is primary."
+    ]
+  },
+  "Orthopedic": {
+    "include_if": [
+      "Primary objective is skeletal, bone, joint, mineralization, posture, scoliosis, mobility, or musculoskeletal phenotype.",
+      "Paper presents orthopedic outcomes or mechanistic skeletal data."
+    ],
+    "exclude_if": [
+      "Musculoskeletal findings appear only in background or broad phenotype list.",
+      "Growth/stature is primary, which should usually be Growth."
+    ],
+    "strong_indicators": [
+      "skeletal",
+      "bone",
+      "joint",
+      "orthopedic",
+      "scoliosis",
+      "musculoskeletal",
+      "bone density",
+      "mineralization",
+      "mobility"
+    ],
+    "negative_examples": [
+      "Short stature paper with skeletal maturation -> Growth if growth trajectory is primary.",
+      "Broad phenotype overview listing scoliosis -> General and Reviews."
+    ]
+  },
+  "Otolaryngology": {
+    "include_if": [
+      "Primary objective is ear, nose, throat, hearing, airway, swallowing, sinus, laryngeal, craniofacial ENT, otitis, or ENT structural finding.",
+      "Paper presents ENT/hearing/airway outcomes in CFC/RASopathy patients or CFC mutation model."
+    ],
+    "exclude_if": [
+      "ENT findings appear only in a broad phenotype list.",
+      "Respiratory/lung disease is primary, which should be Pulmonology.",
+      "Feeding/GI swallowing/nutrition is primary, which may be Gastroenterology."
+    ],
+    "strong_indicators": [
+      "hearing",
+      "airway",
+      "otitis",
+      "laryngeal",
+      "ENT",
+      "otorhinolaryngologic",
+      "swallowing",
+      "sinus",
+      "craniofacial"
+    ],
+    "negative_examples": [
+      "Pulmonary aspiration paper -> Pulmonology or Gastroenterology depending on primary objective.",
+      "Broad clinical review listing hearing loss -> General and Reviews."
+    ]
+  },
+  "Pulmonology": {
+    "include_if": [
+      "Primary objective is lung disease, airway malformation, respiratory infection, aspiration, wheeze, cough, sleep-disordered breathing, or pulmonary function.",
+      "Paper presents respiratory outcomes or pulmonary management data in CFC/RASopathy patients."
+    ],
+    "exclude_if": [
+      "Respiratory symptoms appear only in phenotype list.",
+      "ENT airway/hearing focus is primary, which should be Otolaryngology."
+    ],
+    "strong_indicators": [
+      "respiratory",
+      "lung",
+      "pulmonary",
+      "airway",
+      "apnea",
+      "aspiration",
+      "wheezing",
+      "sleep-disordered breathing",
+      "infection"
+    ],
+    "negative_examples": [
+      "ENT airway structural paper -> Otolaryngology.",
+      "Broad phenotype review listing respiratory infections -> General and Reviews."
+    ]
+  },
+  "Research Studies": {
+    "include_if": [
+      "Primary objective is original experimental, translational, molecular, developmental, or model-system research that is CFC-relevant but not better captured by a specialty category.",
+      "Study uses CFC-associated RAS/MAPK mutations to investigate disease mechanism without a dominant organ-system category."
+    ],
+    "exclude_if": [
+      "A clearer specialty category exists.",
+      "Review/guideline/overview rather than original research.",
+      "Broad pathway work lacks CFC-specific mutation/model interpretation."
+    ],
+    "strong_indicators": [
+      "model",
+      "mechanism",
+      "experimental",
+      "translational",
+      "RAS/MAPK",
+      "pathophysiology",
+      "developmental mechanism",
+      "cellular"
+    ],
+    "negative_examples": [
+      "Original cardiac mechanism study -> Cardiology if cardiac outcome is primary.",
+      "Original genetic variant study -> Genetics."
+    ]
+  },
+  "Seizures": {
+    "include_if": [
+      "Primary objective is epilepsy, seizure phenotype, EEG, epileptic encephalopathy, antiseizure medication, or seizure mechanism.",
+      "Paper presents seizure/EEG outcomes or seizure management in CFC/RASopathy patients or CFC mutation model."
+    ],
+    "exclude_if": [
+      "Seizures appear only in neurologic symptom list.",
+      "Broader neuroimaging/hypotonia/cognition is primary, which should be Neurology or Development and Behavior."
+    ],
+    "strong_indicators": [
+      "epilepsy",
+      "seizure",
+      "infantile spasms",
+      "EEG",
+      "antiseizure medication",
+      "epileptic encephalopathy",
+      "status epilepticus"
+    ],
+    "negative_examples": [
+      "Neurologic phenotype paper listing seizures among many findings -> Neurology unless seizure/EEG is primary.",
+      "Broad clinical review listing epilepsy -> General and Reviews."
+    ]
+  },
+"Treatments": {
+  "decision_rule": [
+    "Choose Treatments ONLY if evaluating treatment is the primary objective."
+  ],
+
+  "include_if": [
+    "Clinical trial",
+    "Drug efficacy",
+    "MEK inhibitor outcomes",
+    "Treatment response",
+    "Surgical outcomes",
+    "Medication comparison"
+  ],
+
+  "exclude_if": [
+    "Treatment mentioned only in Discussion.",
+    "Supportive care recommendations.",
+    "Case report mentioning treatment.",
+    "Management paragraph.",
+    "Review discussing available therapies.",
+    "Paper primarily studies disease characteristics."
+  ]
+}
+}
