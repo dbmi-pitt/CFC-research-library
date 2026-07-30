@@ -1,0 +1,16 @@
+[project]
+name = "cfc-research-library"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "biopython>=1.87",
+    "openai>=2.50.0",
+    "openpyxl>=3.1.5",
+    "packaging>=26.2",
+    "pandas>=3.0.5",
+    "python-dateutil>=2.9.0.post0",
+    "pyzotero>=1.13.3",
+    "sentence-transformers>=5.6.1",
+]

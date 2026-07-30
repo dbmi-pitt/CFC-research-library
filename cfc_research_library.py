@@ -2239,13 +2239,14 @@ def launch_openai_deep_research(prompt: str) -> dict[str, str]:
 
     client = OpenAI(api_key=api_key)
     response = client.responses.create(
-        model=os.getenv("OPENAI_DEEP_RESEARCH_MODEL", "o3-deep-research"),
+        model=os.getenv("OPENAI_DEEP_RESEARCH_MODEL", "gpt-5.6-terra"),
+        reasoning={"effort": "medium"},
         input=prompt,
         background=True,
         tools=[
-            {"type": "web_search_preview"},
-            {"type": "code_interpreter", "container": {"type": "auto"}},
+            {"type": "web_search"}
         ],
+        max_tool_calls=12
     )
     return {
         "response_id": getattr(response, "id", ""),
@@ -2253,6 +2254,73 @@ def launch_openai_deep_research(prompt: str) -> dict[str, str]:
         "status": getattr(response, "status", "submitted"),
         "submitted_at": time.ctime(),
     }
+
+
+def extract_response_output_text(response: Any) -> str:
+    text = getattr(response, "output_text", "") or ""
+    if text:
+        return str(text).strip()
+
+    output_items = getattr(response, "output", None) or []
+    parts: list[str] = []
+    for item in output_items:
+        if getattr(item, "type", "") != "message":
+            continue
+        for content in getattr(item, "content", None) or []:
+            if getattr(content, "type", "") == "output_text":
+                value = getattr(content, "text", "") or ""
+                if value:
+                    parts.append(str(value).strip())
+    return "\n\n".join(part for part in parts if part).strip()
+
+
+def wait_for_openai_deep_research_completion(openai_run: dict[str, str]) -> Any:
+    response_id = openai_run.get("response_id", "").strip()
+    if not response_id:
+        raise RuntimeError("OpenAI deep research response ID is missing.")
+
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is required to retrieve deep research results.")
+
+    from openai import OpenAI
+
+    client = OpenAI(api_key=api_key)
+    timeout_seconds = int(os.getenv("OPENAI_DEEP_RESEARCH_TIMEOUT_SECONDS", "1800"))
+    poll_interval_seconds = max(5, int(os.getenv("OPENAI_DEEP_RESEARCH_POLL_INTERVAL_SECONDS", "15")))
+    deadline = time.time() + timeout_seconds
+    attempt = 0
+
+    while True:
+        attempt += 1
+        response = client.responses.retrieve(response_id)
+        status = str(getattr(response, "status", "unknown"))
+        print(f"Polling OpenAI deep research response {response_id} (attempt {attempt}, status: {status})")
+
+        if status == "completed":
+            return response
+        if status in {"failed", "cancelled", "expired", "incomplete"}:
+            error = getattr(response, "error", None)
+            incomplete_details = getattr(response, "incomplete_details", None)
+            raise RuntimeError(
+                f"OpenAI deep research ended with status '{status}'. "
+                f"error={error!r} incomplete_details={incomplete_details!r}"
+            )
+        if time.time() >= deadline:
+            raise TimeoutError(
+                f"Timed out after {timeout_seconds} seconds waiting for OpenAI deep research response {response_id}."
+            )
+        time.sleep(poll_interval_seconds)
+
+
+def write_openai_deep_research_markdown(workbook_path: Path, response: Any) -> Path:
+    report_text = extract_response_output_text(response)
+    if not report_text:
+        raise RuntimeError("OpenAI deep research response completed without any output text.")
+
+    report_path = workbook_path.with_name(f"{workbook_path.stem}_deep_research.md")
+    report_path.write_text(report_text + "\n", encoding="utf-8")
+    return report_path
 
 
 def write_workbook(
@@ -2550,6 +2618,10 @@ def main() -> None:
         print(f"OpenAI deep research submitted: {openai_run.get('response_id', '')} ({openai_run.get('status', '')})")
     print(f"New records appended: {len(new_df)}")
     print(f"Workbook written: {output_path.resolve()}")
+    if openai_run:
+        response = wait_for_openai_deep_research_completion(openai_run)
+        report_path = write_openai_deep_research_markdown(output_path, response)
+        print(f"OpenAI deep research report written: {report_path.resolve()}")
 
 
 if __name__ == "__main__":
